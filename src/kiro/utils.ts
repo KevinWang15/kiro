@@ -1,0 +1,568 @@
+/**
+ * Utility Functions for Kiro Handler
+ *
+ * Includes:
+ * - Thinking tag detection
+ * - Tool pairing validation
+ * - Session ID extraction
+ * - UTF-16-safe string operations
+ */
+
+import { v4 as uuidv4 } from "uuid";
+import { ToolResult, HistoryMessage } from "./types.js";
+
+const KIRO_PREMIUM_USAGE_LIMIT_THRESHOLD = 600;
+
+// ============================================================================
+// Thinking Tag Detection
+// ============================================================================
+
+/**
+ * Characters that wrap tags when used in code/quoted contexts
+ * Real thinking tags should NOT be wrapped by these
+ */
+const QUOTE_CHARS = new Set([
+  "`",
+  '"',
+  "'",
+  "\\",
+  "#",
+  "!",
+  "@",
+  "$",
+  "%",
+  "^",
+  "&",
+  "*",
+  "(",
+  ")",
+  "-",
+  "_",
+  "=",
+  "+",
+  "[",
+  "]",
+  "{",
+  "}",
+  ";",
+  ":",
+  "<",
+  ">",
+  ",",
+  ".",
+  "?",
+  "/",
+]);
+
+/**
+ * Check if character at position is a quote character
+ */
+function isQuoteChar(buffer: string, pos: number): boolean {
+  if (pos < 0 || pos >= buffer.length) return false;
+  return QUOTE_CHARS.has(buffer[pos]);
+}
+
+/**
+ * Find real thinking start tag (not wrapped in quotes/backticks)
+ *
+ * Skips tags that are wrapped in quote characters like:
+ * - `<thinking>` (code context)
+ * - "<thinking>" (string context)
+ * - '<thinking>' (string context)
+ */
+export function findRealThinkingStartTag(buffer: string): number | null {
+  const TAG = "<thinking>";
+  let searchStart = 0;
+
+  while (true) {
+    const pos = buffer.indexOf(TAG, searchStart);
+    if (pos === -1) return null;
+
+    // Check if wrapped by quote characters
+    const hasQuoteBefore = pos > 0 && isQuoteChar(buffer, pos - 1);
+    const hasQuoteAfter = isQuoteChar(buffer, pos + TAG.length);
+
+    // If not wrapped, this is a real tag
+    if (!hasQuoteBefore && !hasQuoteAfter) {
+      return pos;
+    }
+
+    // Skip and continue searching
+    searchStart = pos + 1;
+  }
+}
+
+/**
+ * Find real thinking end tag
+ *
+ * Requirements:
+ * - Not wrapped in quotes/backticks
+ * - Followed by double newline (\n\n) OR
+ * - At end of buffer (when followed by only whitespace)
+ */
+export function findRealThinkingEndTag(buffer: string): number | null {
+  const TAG = "</thinking>";
+  let searchStart = 0;
+
+  while (true) {
+    const pos = buffer.indexOf(TAG, searchStart);
+    if (pos === -1) return null;
+
+    // Check if wrapped by quote characters
+    const hasQuoteBefore = pos > 0 && isQuoteChar(buffer, pos - 1);
+    const hasQuoteAfter = isQuoteChar(buffer, pos + TAG.length);
+
+    if (hasQuoteBefore || hasQuoteAfter) {
+      searchStart = pos + 1;
+      continue;
+    }
+
+    // Check if followed by double newline
+    const afterPos = pos + TAG.length;
+    const afterContent = buffer.substring(afterPos);
+
+    // If not enough content to check, wait for more
+    if (afterContent.length < 2) {
+      return null;
+    }
+
+    // Real end tag must be followed by \n\n
+    if (afterContent.startsWith("\n\n")) {
+      return pos;
+    }
+
+    searchStart = pos + 1;
+  }
+}
+
+/**
+ * Find thinking end tag at buffer end (for boundary events)
+ *
+ * Accepts tags at end of buffer (followed only by whitespace)
+ */
+export function findRealThinkingEndTagAtBufferEnd(
+  buffer: string,
+): number | null {
+  const TAG = "</thinking>";
+  let searchStart = 0;
+
+  while (true) {
+    const pos = buffer.indexOf(TAG, searchStart);
+    if (pos === -1) return null;
+
+    const hasQuoteBefore = pos > 0 && isQuoteChar(buffer, pos - 1);
+    const hasQuoteAfter = isQuoteChar(buffer, pos + TAG.length);
+
+    if (hasQuoteBefore || hasQuoteAfter) {
+      searchStart = pos + 1;
+      continue;
+    }
+
+    // Check if followed only by whitespace
+    const afterPos = pos + TAG.length;
+    const afterContent = buffer.substring(afterPos);
+
+    if (afterContent.trim().length === 0) {
+      return pos;
+    }
+
+    searchStart = pos + 1;
+  }
+}
+
+/**
+ * Find a safe UTF-16 code-unit boundary for slicing
+ *
+ * Prevents slicing in the middle of a surrogate pair
+ */
+export function findCharBoundary(s: string, target: number): number {
+  if (target >= s.length) return s.length;
+  if (target <= 0) return 0;
+
+  // For JavaScript strings (UTF-16), character boundaries are at each code unit
+  // except when we have surrogate pairs (4-byte UTF-16 sequences for code points > U+FFFF)
+  // If we're in the middle of a surrogate pair (low surrogate), move back
+
+  const char = s.charCodeAt(target);
+  // Low surrogate range: 0xDC00 - 0xDFFF
+  // If we're at a low surrogate, the actual boundary is one position back
+  if (char >= 0xdc00 && char <= 0xdfff && target > 0) {
+    // Check if the previous character is a high surrogate
+    const prev = s.charCodeAt(target - 1);
+    if (prev >= 0xd800 && prev <= 0xdbff) {
+      return target - 1;
+    }
+  }
+
+  return target;
+}
+
+// ============================================================================
+// Session ID Extraction
+// ============================================================================
+
+/**
+ * Extract session UUID from user_id
+ *
+ * Claude Code format: user_xxx_account__session_uuid
+ * Example: user_0dede..._account__session_8bb5523b-ec7c-4540-a9ca-beb6d79f1552
+ */
+export function extractSessionId(userId: string): string | null {
+  const SESSION_PREFIX = "session_";
+  const pos = userId.indexOf(SESSION_PREFIX);
+
+  if (pos === -1) return null;
+
+  const sessionPart = userId.substring(pos + SESSION_PREFIX.length);
+
+  // UUID format: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx (36 chars)
+  if (sessionPart.length < 36) return null;
+
+  const uuid = sessionPart.substring(0, 36);
+
+  // Validate UUID format (simple check)
+  const dashCount = uuid.split("-").length - 1;
+  if (dashCount !== 4) return null;
+
+  return uuid;
+}
+
+/**
+ * Generate or extract conversation ID
+ */
+export function getConversationId(metadata?: { user_id?: string }): string {
+  if (metadata?.user_id) {
+    const sessionId = extractSessionId(metadata.user_id);
+    if (sessionId) return sessionId;
+  }
+  return uuidv4();
+}
+
+// ============================================================================
+// Tool Pairing Validation
+// ============================================================================
+
+/**
+ * Collect all tool_use_ids from history messages
+ */
+export function collectToolUseIdsFromHistory(
+  history: HistoryMessage[],
+): Set<string> {
+  const ids = new Set<string>();
+
+  for (const msg of history) {
+    if ("assistantResponseMessage" in msg) {
+      const toolUses = msg.assistantResponseMessage.toolUses;
+      if (toolUses) {
+        for (const toolUse of toolUses) {
+          ids.add(toolUse.toolUseId);
+        }
+      }
+    }
+  }
+
+  return ids;
+}
+
+/**
+ * Collect tool_use_ids that already have results in history
+ */
+export function collectToolResultIdsFromHistory(
+  history: HistoryMessage[],
+): Set<string> {
+  const ids = new Set<string>();
+
+  for (const msg of history) {
+    if ("userInputMessage" in msg) {
+      const results = msg.userInputMessage.userInputMessageContext?.toolResults;
+      if (results) {
+        for (const result of results) {
+          ids.add(result.toolUseId);
+        }
+      }
+    }
+  }
+
+  return ids;
+}
+
+/**
+ * Validate tool_use/tool_result pairing
+ *
+ * Returns:
+ * - validatedResults: tool_results that have matching tool_uses
+ * - orphanedToolUseIds: tool_use_ids without matching tool_results
+ */
+export function validateToolPairing(
+  history: HistoryMessage[],
+  currentToolResults: ToolResult[],
+): {
+  validatedResults: ToolResult[];
+  orphanedToolUseIds: Set<string>;
+} {
+  const allToolUseIds = collectToolUseIdsFromHistory(history);
+  const historyToolResultIds = collectToolResultIdsFromHistory(history);
+
+  // Find unpaired tool_uses (not yet have results)
+  const unpairedToolUseIds = new Set<string>();
+  for (const id of Array.from(allToolUseIds)) {
+    if (!historyToolResultIds.has(id)) {
+      unpairedToolUseIds.add(id);
+    }
+  }
+
+  // Filter current tool_results
+  const validatedResults: ToolResult[] = [];
+
+  for (const result of currentToolResults) {
+    if (unpairedToolUseIds.has(result.toolUseId)) {
+      // Valid pairing
+      validatedResults.push(result);
+      unpairedToolUseIds.delete(result.toolUseId);
+    } else if (allToolUseIds.has(result.toolUseId)) {
+      // Duplicate - tool_use already has result in history
+      console.warn(
+        `Skipping duplicate tool_result: tool_use_id=${result.toolUseId}`,
+      );
+    } else {
+      // Orphaned - no matching tool_use
+      console.warn(
+        `Skipping orphaned tool_result: no matching tool_use, tool_use_id=${result.toolUseId}`,
+      );
+    }
+  }
+
+  // Log orphaned tool_uses
+  for (const orphanedId of Array.from(unpairedToolUseIds)) {
+    console.warn(
+      `Detected orphaned tool_use: no matching tool_result, tool_use_id=${orphanedId}`,
+    );
+  }
+
+  return { validatedResults, orphanedToolUseIds: unpairedToolUseIds };
+}
+
+/**
+ * Remove orphaned tool_uses from history
+ *
+ * Kiro API requires every tool_use to have a matching tool_result
+ */
+export function removeOrphanedToolUses(
+  history: HistoryMessage[],
+  orphanedIds: Set<string>,
+): void {
+  if (orphanedIds.size === 0) return;
+
+  for (const msg of history) {
+    if ("assistantResponseMessage" in msg) {
+      const toolUses = msg.assistantResponseMessage.toolUses;
+      if (toolUses) {
+        const originalLen = toolUses.length;
+        const filtered = toolUses.filter(
+          (tu) => !orphanedIds.has(tu.toolUseId),
+        );
+
+        if (filtered.length === 0) {
+          delete msg.assistantResponseMessage.toolUses;
+        } else if (filtered.length !== originalLen) {
+          msg.assistantResponseMessage.toolUses = filtered;
+          console.debug(
+            `Removed ${originalLen - filtered.length} orphaned tool_uses from history`,
+          );
+        }
+      }
+    }
+  }
+}
+
+// ============================================================================
+// Model Mapping
+// ============================================================================
+
+type KiroStatusInfoLike = {
+  usageLimit?: unknown;
+  isPremium?: unknown;
+};
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
+function normalizeNumber(value: unknown): number | null {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value;
+  }
+
+  if (typeof value === "string") {
+    const parsed = Number.parseFloat(value);
+    if (Number.isFinite(parsed)) {
+      return parsed;
+    }
+  }
+
+  return null;
+}
+
+export function isKiroPremiumUsageLimit(
+  usageLimit: number | null | undefined,
+): boolean {
+  return (
+    typeof usageLimit === "number" &&
+    Number.isFinite(usageLimit) &&
+    usageLimit > KIRO_PREMIUM_USAGE_LIMIT_THRESHOLD
+  );
+}
+
+export function parseKiroStatusInfo(
+  rawStatusInfo?: string | null,
+): KiroStatusInfoLike | null {
+  if (typeof rawStatusInfo !== "string") {
+    return null;
+  }
+
+  const trimmed = rawStatusInfo.trim();
+  if (!trimmed) {
+    return null;
+  }
+
+  try {
+    const parsed = JSON.parse(trimmed);
+    return isPlainObject(parsed) ? (parsed as KiroStatusInfoLike) : null;
+  } catch {
+    return null;
+  }
+}
+
+export function isKiroPremiumFromStatusInfo(
+  rawStatusInfo?: string | null,
+): boolean {
+  const statusInfo = parseKiroStatusInfo(rawStatusInfo);
+  if (!statusInfo) {
+    return false;
+  }
+
+  if (typeof statusInfo.isPremium === "boolean") {
+    return statusInfo.isPremium;
+  }
+
+  return isKiroPremiumUsageLimit(normalizeNumber(statusInfo.usageLimit));
+}
+
+export function shouldPreferPremiumKiroAccount(model: string): boolean {
+  return mapModel(model, true) !== mapModel(model, false);
+}
+
+function normalizeExperimentalModelName(model: string): string {
+  return model.trim().toLowerCase();
+}
+
+function toDottedClaudeVersionAlias(model: string): string | null {
+  // Only used as an extra supportedExperimentalModels lookup key.
+  const trimmed = model.trim();
+  const match = /^(claude-.+)-(\d{1,2})-(\d{1,2})(?:-[^-]+)?$/i.exec(trimmed);
+  return match ? `${match[1]}-${match[2]}.${match[3]}` : null;
+}
+
+export function getSupportedKiroExperimentalModelId(
+  model: string,
+  supportedExperimentalModels?: readonly string[] | null,
+): string | null {
+  if (
+    !Array.isArray(supportedExperimentalModels) ||
+    supportedExperimentalModels.length === 0
+  ) {
+    return null;
+  }
+
+  const candidates = [model];
+  const dottedAlias = toDottedClaudeVersionAlias(model);
+  if (dottedAlias) {
+    candidates.push(dottedAlias);
+  }
+
+  for (const candidate of candidates) {
+    const normalizedCandidate = normalizeExperimentalModelName(candidate);
+    const supported = supportedExperimentalModels.some(
+      (supportedModel) =>
+        typeof supportedModel === "string" &&
+        normalizeExperimentalModelName(supportedModel) === normalizedCandidate,
+    );
+    if (supported) {
+      return candidate;
+    }
+  }
+
+  return null;
+}
+
+export function supportsKiroExperimentalModel(
+  model: string,
+  supportedExperimentalModels?: readonly string[] | null,
+): boolean {
+  return (
+    getSupportedKiroExperimentalModelId(model, supportedExperimentalModels) !==
+    null
+  );
+}
+
+/**
+ * Map Anthropic model names to Kiro model IDs
+ */
+export function mapModel(
+  model: string,
+  isPremium: boolean = false,
+  supportedExperimentalModels?: readonly string[] | null,
+): string | null {
+  if (model.startsWith("!")) {
+    return model;
+  }
+
+  const lower = model.toLowerCase();
+  if (lower.includes("haiku")) {
+    return "claude-haiku-4.5";
+  }
+
+  const supportedExperimentalModelId = getSupportedKiroExperimentalModelId(
+    model,
+    supportedExperimentalModels,
+  );
+  if (supportedExperimentalModelId) {
+    return supportedExperimentalModelId;
+  }
+
+  if (lower.includes("fable")) {
+    return isPremium ? "claude-opus-5.5" : "claude-sonnet-4.5";
+  }
+
+  if (lower.includes("sonnet")) {
+    if (lower.includes("4-5") || lower.includes("4.5")) {
+      return "claude-sonnet-4.5";
+    }
+    if (lower.includes("4-6") || lower.includes("4.6")) {
+      return isPremium ? "claude-sonnet-4.6" : "claude-sonnet-4.5";
+    }
+    return isPremium ? "claude-sonnet-5.5" : "claude-sonnet-4.5";
+  }
+  if (lower.includes("opus")) {
+    if (lower.includes("4-5") || lower.includes("4.5")) {
+      return isPremium ? "claude-opus-4.5" : "claude-sonnet-4.5";
+    }
+    if (lower.includes("4-6") || lower.includes("4.6")) {
+      return isPremium ? "claude-opus-4.6" : "claude-sonnet-4.5";
+    }
+    return isPremium ? "claude-opus-5.5" : "claude-sonnet-4.5";
+  }
+  return null;
+}
+
+/**
+ * Determine thinking type based on model
+ * - Opus 4.6: adaptive
+ * - Others: enabled
+ */
+export function getThinkingType(model: string): "enabled" | "adaptive" {
+  const lower = model.toLowerCase();
+  const isOpus46 =
+    lower.includes("opus") && (lower.includes("4-6") || lower.includes("4.6"));
+  return isOpus46 ? "adaptive" : "enabled";
+}

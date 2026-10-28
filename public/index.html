@@ -1,0 +1,461 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="dark" />
+    <title>Kiro Local Adapter</title>
+    <link rel="stylesheet" href="/vendor/notyf.min.css" />
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <a class="brand" href="/"
+        ><span class="brand-mark">K</span
+        ><span>KIRO <small>LOCAL ADAPTER</small></span></a
+      >
+      <nav>
+        <a href="/" data-nav="accounts">Accounts</a>
+        <a href="/metrics" data-nav="metrics">Metrics</a>
+        <a href="/history" data-nav="history">History</a>
+        <a href="/proxies" data-nav="proxies">Proxies</a>
+      </nav>
+    </header>
+
+    <main>
+      <section id="accounts-page" class="page">
+        <div class="page-heading">
+          <div>
+            <p class="eyebrow">ANTHROPIC COMPATIBILITY</p>
+            <h1>Kiro account pool</h1>
+            <p>
+              Token lifecycle, credits and request routing in one local
+              workspace.
+            </p>
+          </div>
+          <div class="actions">
+            <button class="button" id="refresh-usage">
+              <i data-lucide="refresh-cw"></i><span>Refresh credits</span>
+            </button>
+            <button class="button" id="open-proxies">
+              <i data-lucide="network"></i><span>Manage proxies</span>
+            </button>
+            <button class="button" id="open-import">
+              <i data-lucide="upload"></i><span>Bulk import</span>
+            </button>
+            <button class="button primary" id="new-account">
+              <i data-lucide="user-plus"></i><span>New account</span>
+            </button>
+          </div>
+        </div>
+        <div class="summary-grid" id="account-summary"></div>
+        <div class="endpoint setup-card">
+          <div class="setup-main">
+            <div class="setup-icon">&lt;/&gt;</div>
+            <div class="setup-copy">
+              <h3>Connect Claude Code</h3>
+              <p>
+                Copy the setup script, including API-key approval. Any non-empty
+                key is accepted.
+              </p>
+            </div>
+            <button class="button" id="copy-script">
+              <i data-lucide="copy"></i><span>Copy setup script</span>
+            </button>
+          </div>
+          <div class="setup-values">
+            <div>
+              <span>ANTHROPIC_BASE_URL</span><code id="setup-base-url"></code>
+            </div>
+            <div>
+              <span>ANTHROPIC_API_KEY</span
+              ><code>sk-ant-api03-dummykey123123123123</code>
+            </div>
+          </div>
+          <details class="setup-details">
+            <summary>View full setup script</summary>
+            <pre id="endpoint-script"></pre>
+          </details>
+        </div>
+        <div class="panel">
+          <div class="panel-heading">
+            <div>
+              <h2>Accounts</h2>
+              <span id="account-count"></span>
+            </div>
+            <button
+              class="icon-button"
+              id="reload-accounts"
+              title="Reload accounts"
+              aria-label="Reload accounts"
+            >
+              <i data-lucide="refresh-cw"></i>
+            </button>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>ID</th>
+                  <th>Provider</th>
+                  <th>Token</th>
+                  <th>Priority</th>
+                  <th>Status</th>
+                  <th>Source</th>
+                  <th>Created</th>
+                  <th class="credit-column">Credits & usage</th>
+                  <th>Proxy</th>
+                  <th>Actions</th>
+                </tr>
+              </thead>
+              <tbody id="accounts-body"></tbody>
+            </table>
+          </div>
+          <div id="accounts-empty" class="empty hidden">
+            <h3>No Kiro accounts yet</h3>
+            <p>
+              Paste a login export, nested account JSON, or a raw Kiro API key.
+              OAuth credentials are converted to fresh access tokens
+              automatically.
+            </p>
+            <button class="button primary" data-open-import>
+              <i data-lucide="user-plus"></i
+              ><span>Import your first account</span>
+            </button>
+          </div>
+        </div>
+      </section>
+
+      <section id="metrics-page" class="page hidden">
+        <div class="page-heading">
+          <div>
+            <p class="eyebrow">SQLITE REQUEST LOGS</p>
+            <h1>Performance metrics</h1>
+            <p>Live request metrics from local data.</p>
+          </div>
+          <div class="actions">
+            <div class="time-range-picker" id="metrics-time-range"></div>
+            <button class="button" id="refresh-metrics">Refresh</button>
+          </div>
+        </div>
+        <div class="summary-grid" id="metrics-summary"></div>
+        <div class="panel chart-panel overview-panel">
+          <div class="chart-header">
+            <div>
+              <h2>Performance overview</h2>
+              <p>Request volume, estimated cost and average latency</p>
+            </div>
+            <span>Drag to select a time range</span>
+          </div>
+          <div class="chart overview" id="overview-chart"></div>
+        </div>
+        <div class="chart-grid">
+          <div class="panel chart-panel">
+            <div class="chart-header">
+              <div>
+                <h2>Estimated cost</h2>
+                <p>USD per time bucket</p>
+              </div>
+            </div>
+            <div class="chart" id="cost-chart"></div>
+          </div>
+          <div class="panel chart-panel">
+            <div class="chart-header">
+              <div>
+                <h2>Request outcomes</h2>
+                <p>Successful and failed requests</p>
+              </div>
+            </div>
+            <div class="chart" id="requests-chart"></div>
+          </div>
+          <div class="panel chart-panel">
+            <div class="chart-header">
+              <div>
+                <h2>Latency</h2>
+                <p>Total latency and time to first token</p>
+              </div>
+            </div>
+            <div class="chart" id="latency-chart"></div>
+          </div>
+          <div class="panel chart-panel">
+            <div class="chart-header">
+              <div>
+                <h2>Token usage</h2>
+                <p>Input, output and cached tokens</p>
+              </div>
+            </div>
+            <div class="chart" id="tokens-chart"></div>
+          </div>
+        </div>
+        <div class="metrics-model-grid">
+          <div class="panel chart-panel">
+            <div class="chart-header">
+              <div>
+                <h2>Model cost distribution</h2>
+                <p>Estimated USD stacked by model</p>
+              </div>
+            </div>
+            <div class="chart model-chart" id="model-cost-chart"></div>
+          </div>
+          <div class="panel model-table-panel">
+            <div class="panel-heading">
+              <div>
+                <h2>Cost by model</h2>
+                <span>Selected time range</span>
+              </div>
+            </div>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Model</th>
+                    <th>Requests</th>
+                    <th>Estimated USD</th>
+                    <th>Total tokens</th>
+                    <th>Average latency</th>
+                  </tr>
+                </thead>
+                <tbody id="models-body"></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section id="history-page" class="page hidden">
+        <div class="page-heading">
+          <div>
+            <p class="eyebrow">REQUEST HISTORY</p>
+            <h1>Usage history</h1>
+            <p>
+              Inspect consumption, token usage, cost, timing, and credits for
+              every request.
+            </p>
+          </div>
+          <div class="actions">
+            <div class="time-range-picker" id="history-time-range"></div>
+            <button class="button" id="refresh-history">
+              <i data-lucide="refresh-cw"></i><span>Refresh</span>
+            </button>
+          </div>
+        </div>
+        <div class="panel chart-panel overview-panel">
+          <div class="chart-header">
+            <div>
+              <h2>Usage over time</h2>
+              <p id="history-chart-meta">
+                Estimated USD consumption per time bucket
+              </p>
+            </div>
+            <span>Drag to select a time range</span>
+          </div>
+          <div class="chart overview" id="history-usage-chart"></div>
+        </div>
+        <div class="panel">
+          <div class="panel-heading">
+            <div>
+              <h2 id="history-details-title">
+                Details for Selected Time Range
+              </h2>
+              <span id="history-total"></span>
+            </div>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th></th>
+                  <th>Date</th>
+                  <th>Model</th>
+                  <th>Account</th>
+                  <th>Estimated USD</th>
+                  <th>Consumed after</th>
+                  <th>Kiro credits</th>
+                </tr>
+              </thead>
+              <tbody id="history-body"></tbody>
+            </table>
+          </div>
+          <div id="history-empty" class="empty hidden">
+            <h3>No usage in this range</h3>
+            <p>
+              Choose another time range or make a request through the adapter.
+            </p>
+          </div>
+          <div class="pagination" id="history-pagination"></div>
+        </div>
+      </section>
+
+      <section id="proxies-page" class="page hidden">
+        <div class="page-heading">
+          <div>
+            <p class="eyebrow">OUTBOUND ROUTING</p>
+            <h1>Proxies</h1>
+            <p>HTTPS CONNECT and SOCKS5 with optional basic authentication.</p>
+          </div>
+          <button class="button primary" id="add-proxy">
+            <i data-lucide="plus"></i><span>Add proxy</span>
+          </button>
+        </div>
+        <div class="panel">
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>ID</th>
+                  <th>Name</th>
+                  <th>Type</th>
+                  <th>URL</th>
+                  <th>Authentication</th>
+                  <th>Actions</th>
+                </tr>
+              </thead>
+              <tbody id="proxies-body"></tbody>
+            </table>
+          </div>
+          <div id="proxies-empty" class="empty hidden">
+            <h3>No proxies configured</h3>
+            <p>
+              Accounts use their assigned proxy for inference, token refresh,
+              usage and MCP calls.
+            </p>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <dialog id="import-dialog" class="modal wide">
+      <form method="dialog" class="modal-heading">
+        <div>
+          <p class="eyebrow">AUTOMATIC TOKEN CONVERSION</p>
+          <h2 id="import-dialog-title">Bulk import Kiro accounts</h2>
+        </div>
+        <button class="icon-button" value="cancel" aria-label="Close">
+          <i data-lucide="x"></i>
+        </button>
+      </form>
+      <div class="modal-body">
+        <p class="muted">
+          Paste one credential, an accounts array, or a wrapped export. OAuth
+          accounts are refreshed before storage; API keys are used directly.
+        </p>
+        <label
+          >Credential JSON or raw API key<textarea
+            id="import-text"
+            rows="13"
+            spellcheck="false"
+            placeholder='{"accounts":[{"credentials":{"refreshToken":"...","provider":"Google"}}]}'
+          ></textarea>
+        </label>
+        <div class="form-row">
+          <div>
+            <span class="field-label">Detected accounts</span
+            ><strong id="detected-accounts">0</strong>
+            <div id="parse-error" class="error-text"></div>
+          </div>
+          <label
+            >Proxy assignment<select id="import-proxy-mode">
+              <option value="none">No proxy</option>
+              <option value="random_working">Random working proxy</option>
+            </select></label
+          >
+        </div>
+        <div id="import-progress" class="progress-note hidden">
+          Converting and importing credentials…
+        </div>
+        <pre id="import-result" class="result hidden"></pre>
+      </div>
+      <div class="modal-footer">
+        <button class="button" data-close="import-dialog">Cancel</button
+        ><button class="button primary" id="submit-import">
+          Convert & import
+        </button>
+      </div>
+    </dialog>
+
+    <dialog id="account-dialog" class="modal wide">
+      <form method="dialog" class="modal-heading">
+        <div>
+          <p class="eyebrow" id="account-dialog-eyebrow">LOCAL CREDENTIAL</p>
+          <h2 id="account-dialog-title">Account</h2>
+        </div>
+        <button class="icon-button" value="cancel" aria-label="Close">
+          <i data-lucide="x"></i>
+        </button>
+      </form>
+      <div class="modal-body">
+        <input type="hidden" id="edit-account-id" />
+        <label
+          >Canonical credential JSON<textarea
+            id="edit-credentials"
+            rows="15"
+            spellcheck="false"
+          ></textarea>
+        </label>
+        <div class="form-grid">
+          <label
+            >Priority<input id="edit-priority" type="number" value="1" /></label
+          ><label
+            >Proxy<select id="edit-proxy">
+              <option value="">Direct / environment</option>
+            </select></label
+          ><label>Comment<input id="edit-comment" /></label
+          ><label class="check-label"
+            ><input id="edit-enabled" type="checkbox" /> Enabled in pool</label
+          ><label class="check-label"
+            ><input id="edit-convert" type="checkbox" /> Refresh OAuth token
+            before saving</label
+          >
+        </div>
+        <div id="edit-error" class="error-text"></div>
+      </div>
+      <div class="modal-footer">
+        <button class="button" data-close="account-dialog">Close</button
+        ><button class="button primary" id="save-account">Save changes</button>
+      </div>
+    </dialog>
+
+    <dialog id="proxy-dialog" class="modal">
+      <form method="dialog" class="modal-heading">
+        <h2 id="proxy-dialog-title">Add proxy</h2>
+        <button class="icon-button" value="cancel" aria-label="Close">
+          <i data-lucide="x"></i>
+        </button>
+      </form>
+      <div class="modal-body">
+        <input type="hidden" id="proxy-id" /><label
+          >Name<input id="proxy-name" required /></label
+        ><label
+          >Type<select id="proxy-type">
+            <option value="HTTPS_CONNECT">HTTPS CONNECT</option>
+            <option value="SOCKS5">SOCKS5</option>
+          </select></label
+        ><label
+          >URL<input
+            id="proxy-url"
+            placeholder="http://127.0.0.1:7890"
+            required
+        /></label>
+        <div class="form-grid">
+          <label>Username<input id="proxy-username" autocomplete="off" /></label
+          ><label
+            >Password<input
+              id="proxy-password"
+              type="password"
+              autocomplete="new-password"
+          /></label>
+        </div>
+        <div id="proxy-error" class="error-text"></div>
+      </div>
+      <div class="modal-footer">
+        <button class="button" data-close="proxy-dialog">Cancel</button
+        ><button class="button primary" id="save-proxy">Save proxy</button>
+      </div>
+    </dialog>
+
+    <script src="/vendor/echarts.min.js"></script>
+    <script src="/vendor/lucide.min.js"></script>
+    <script src="/vendor/notyf.min.js"></script>
+    <script src="/app.js" type="module"></script>
+  </body>
+</html>
