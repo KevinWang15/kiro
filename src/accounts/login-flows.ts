@@ -108,6 +108,12 @@ export function isLoopbackOrigin(origin: string): boolean {
   }
 }
 
+/** "http://LOCALHOST:3000/x/" -> "http://localhost:3000" (URL lowercases the host). */
+function normalizeOrigin(origin: string): URL {
+  const url = new URL(origin);
+  return new URL(`${url.protocol}//${url.host}`);
+}
+
 async function post(url: string, body: unknown, proxy: ProxyRecord | null, form = false, headers: Record<string, string> = {}) {
   const httpsAgent = buildAgentFromProxy(proxy || undefined);
   return axios.post(url, form ? new URLSearchParams(body as Record<string, string>).toString() : body, {
@@ -350,18 +356,22 @@ export class LoginFlowService {
   // ------------------------------------------------------- IAM Identity Center
   async startIdentityCenter(regionInput: string, startUrlInput: string, origin: string, proxy: ProxyRecord | null): Promise<LoginSession> {
     const region = assertRegion(regionInput);
-    let startUrl: URL;
+    const startUrl = startUrlInput.trim();
+    if (!startUrl.startsWith("https://"))
+      throw new Error("Enter your organization's start URL, starting with https:// (e.g. https://d-1234567890.awsapps.com/start)");
     try {
-      startUrl = new URL(startUrlInput.trim());
+      new URL(startUrl);
     } catch {
-      throw new Error("Enter your organization's start URL, e.g. https://d-1234567890.awsapps.com/start");
+      throw new Error("The start URL isn't a valid address.");
     }
-    if (startUrl.protocol !== "https:") throw new Error("The start URL must use https://");
     if (!isLoopbackOrigin(origin))
       throw new Error("IAM Identity Center sign-in needs the dashboard opened on localhost or 127.0.0.1.");
+    const callbackOrigin = normalizeOrigin(origin);
     const session = this.create("identity_center", region, proxy);
-    session.startUrl = startUrl.toString().replace(/\/$/, "");
-    session.redirectUri = `${origin.replace(/localhost/, "127.0.0.1")}${CALLBACK_PATH}`;
+    session.startUrl = startUrl;
+    // The client is registered for http://127.0.0.1/oauth/callback; AWS lets
+    // the port vary, but the host must stay 127.0.0.1 (login-zh.js).
+    session.redirectUri = `http://127.0.0.1:${callbackOrigin.port || "80"}${CALLBACK_PATH}`;
     try {
       const registration = await post(`${oidcBase(region)}/client/register`, {
         clientName: "Kiro-IdC-Adapter",
@@ -405,16 +415,16 @@ export class LoginFlowService {
       throw new Error("Kiro sign-in needs the dashboard opened on localhost or 127.0.0.1.");
     const session = this.create("kiro_portal", region, proxy);
     // Bare origin, like the script; the portal appends its own callback path.
-    session.redirectUri = origin.replace(/\/$/, "");
+    session.redirectUri = normalizeOrigin(origin).toString().replace(/\/$/, "");
     const { codeVerifier, codeChallenge } = pkce();
     session.codeVerifier = codeVerifier;
     const signin = new URL(KIRO_SIGNIN_URL);
     signin.search = new URLSearchParams({
+      redirect_from: "KiroIDE",
       state: session.state,
       code_challenge: codeChallenge,
       code_challenge_method: "S256",
       redirect_uri: session.redirectUri,
-      redirect_from: "KiroIDE",
     }).toString();
     session.verificationUrl = signin.toString();
     return this.view(session.id)!;
@@ -426,19 +436,30 @@ export class LoginFlowService {
    * show, or a URL to redirect to (external IdP second leg).
    */
   async handleCallback(params: URLSearchParams, pathname = CALLBACK_PATH): Promise<{ redirect?: string; ok: boolean; message: string }> {
-    const state = params.get("state")?.trim();
-    if (!state) return { ok: false, message: "The sign-in response is missing its state. Start again from the dashboard." };
-    const session = [...this.sessions.values()].find(
-      (s) => s.status === "pending" && (s.state === state || s.external?.state === state),
-    );
-    if (!session) return { ok: false, message: "This sign-in link has expired or was already used. Start again from the dashboard." };
-
-    const error = params.get("error");
+    const value = (key: string) => params.get(key)?.trim() || undefined;
+    const state = value("state");
+    const error = value("error");
+    const session = state
+      ? [...this.sessions.values()].find(
+          (s) => s.status === "pending" && (s.state === state || s.external?.state === state),
+        )
+      : undefined;
     if (error) {
-      this.fail(session, new Error(`Sign-in failed: ${params.get("error_description") || error}`));
-      return { ok: false, message: session.error! };
+      const message = `Sign-in failed: ${value("error_description") || error}`;
+      // An error may arrive without state; then fail the only pending
+      // redirect sign-in, if there is exactly one, so the UI isn't left waiting.
+      const target =
+        session ||
+        (() => {
+          const pending = [...this.sessions.values()].filter((s) => s.status === "pending" && s.method !== "builder_id");
+          return pending.length === 1 ? pending[0] : undefined;
+        })();
+      if (target) this.fail(target, new Error(message));
+      return { ok: false, message };
     }
-    const code = params.get("code")?.trim();
+    if (!state) return { ok: false, message: "The sign-in response is missing its state. Start again from the dashboard." };
+    if (!session) return { ok: false, message: "This sign-in link has expired or was already used. Start again from the dashboard." };
+    const code = value("code");
     try {
       if (session.external && state === session.external.state) {
         if (!code) throw new Error("The identity provider returned no authorization code.");
@@ -447,7 +468,9 @@ export class LoginFlowService {
         if (!code) throw new Error("AWS returned no authorization code.");
         await this.finishIdentityCenter(session, code);
       } else {
-        const loginOption = (params.get("login_option") || "").toLowerCase();
+        // Exact, case-sensitive match like the script; the raw value is echoed
+        // back in the token exchange redirect_uri, so it must not be altered.
+        const loginOption = value("login_option") || "";
         if (loginOption === "google" || loginOption === "github") {
           if (!code) throw new Error(`${loginOption} sign-in returned no authorization code.`);
           await this.finishSocial(session, code, loginOption, pathname);

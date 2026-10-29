@@ -221,7 +221,7 @@ export function createServerContext(database: AppDatabase): ServerContext {
       const credentials = logins.take(String(req.params.id));
       if (!credentials) return void res.status(409).json({ error: "This sign-in was already used" });
       try {
-        const { id } = await importer.createOne(credentials, accountOptions(req.body, `Signed in with ${view.label}`));
+        const { id } = await importer.createOne(credentials, accountOptions(req.body, `Signed in with ${view.label}`), true);
         res.status(201).json(createdAccount(id));
       } catch (error) {
         res.status(400).json({ error: (error as Error).message });
@@ -229,7 +229,8 @@ export function createServerContext(database: AppDatabase): ServerContext {
     }),
   );
   const loginCallback = asyncRoute(async (req, res) => {
-    const params = new URLSearchParams(req.originalUrl.split("?")[1] || "");
+    // Full parse so a literal "?" inside a value (e.g. issuer_url) survives.
+    const params = new URL(req.originalUrl, "http://localhost").searchParams;
     const result = await logins.handleCallback(params, req.path);
     if (result.redirect) return void res.redirect(302, result.redirect);
     res.status(result.ok ? 200 : 400).type("html").send(callbackPage(result.ok, result.message));

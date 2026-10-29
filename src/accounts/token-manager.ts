@@ -111,6 +111,23 @@ export function isApiKeyAccount(credentials: KiroCredentials | null): boolean {
   return authMethod === "api_key" || authMethod === "apikey";
 }
 
+/** Thrown when an auth server rejects a refresh; carries its own reason. */
+export class RefreshRejectedError extends Error {}
+
+function refreshRejected(prefix: string, response: { status: number; data: any }): RefreshRejectedError {
+  const data = response.data;
+  const code = typeof data === "object" ? data?.error || data?.__type : undefined;
+  const detail =
+    (typeof data === "object" && (data?.error_description || data?.message)) ||
+    (typeof data === "string" ? data.slice(0, 200) : "");
+  const hint = /invalid_grant|InvalidGrant/i.test(String(code || detail))
+    ? " The refresh token is no longer valid; sign in again to keep this account."
+    : "";
+  return new RefreshRejectedError(
+    `${prefix} (HTTP ${response.status}${code ? `, ${code}` : ""})${detail ? `: ${detail}` : ""}.${hint}`,
+  );
+}
+
 async function postRefresh(
   url: string,
   data: unknown,
@@ -147,7 +164,7 @@ async function refreshSocialLoginToken(
     typeof response.data?.accessToken !== "string" ||
     !response.data.accessToken.trim()
   )
-    return null;
+    throw refreshRejected("Kiro rejected the token refresh", response);
   const {
     accessToken,
     refreshToken: newRefreshToken,
@@ -188,9 +205,9 @@ async function refreshExternalIdpToken(
     proxy,
     true,
   );
-  if (response.status !== 200) return null;
   const accessToken = response.data?.access_token || response.data?.accessToken;
-  if (!accessToken) return null;
+  if (response.status !== 200 || !accessToken)
+    throw refreshRejected("The identity provider rejected the token refresh", response);
   const expiresIn = Number(
     response.data?.expires_in || response.data?.expiresIn || 3600,
   );
@@ -228,18 +245,8 @@ async function refreshKiroToken(
       refreshToken: credentials.refreshToken,
     },
     {
-      headers: {
-        "Content-Type": "application/json",
-        Host: `oidc.${region}.amazonaws.com`,
-        Connection: "keep-alive",
-        "x-amz-user-agent":
-          "aws-sdk-js/3.738.0 ua/2.1 os/other lang/js md/browser#unknown_unknown api/sso-oidc#3.738.0 m/E KiroIDE",
-        Accept: "*/*",
-        "Accept-Language": "*",
-        "sec-fetch-mode": "cors",
-        "User-Agent": "node",
-        "Accept-Encoding": "br, gzip, deflate",
-      },
+      // Same as refresh.js: a plain JSON POST with no IDE fingerprint headers.
+      headers: { "Content-Type": "application/json" },
       httpsAgent,
       ...(httpsAgent ? { proxy: false as const } : {}),
       timeout: 30000,
@@ -251,7 +258,7 @@ async function refreshKiroToken(
     typeof response.data?.accessToken !== "string" ||
     !response.data.accessToken.trim()
   )
-    return null;
+    throw refreshRejected("AWS rejected the token refresh", response);
   const {
     accessToken,
     refreshToken: newRefreshToken,

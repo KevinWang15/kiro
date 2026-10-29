@@ -45,8 +45,10 @@ async function createHarness(t: test.TestContext) {
       }
       if (body.grantType === "authorization_code")
         return json(200, { accessToken: "idc-access", refreshToken: "idc-refresh", expiresIn: 3600 });
-      if (body.grantType === "refresh_token")
+      if (body.grantType === "refresh_token") {
+        if (body.refreshToken === "revoked") return json(400, { error: "invalid_grant", error_description: "Invalid refresh token provided" });
         return json(200, { accessToken: `refreshed-${body.refreshToken}`, refreshToken: body.refreshToken, expiresIn: 3600 });
+      }
     }
     if (path === "/codewhisperer/ListAvailableProfiles")
       return json(200, { profiles: [{ arn: "arn:aws:codewhisperer:eu-central-1:123456789012:profile/ABC" }] });
@@ -56,7 +58,7 @@ async function createHarness(t: test.TestContext) {
       return json(200, { accessToken: `refreshed-${body.refreshToken}`, refreshToken: body.refreshToken, expiresIn: 3600 });
     if (path === "/idp/.well-known/openid-configuration")
       return json(200, { authorization_endpoint: `${fakeUrl}/idp/authorize`, token_endpoint: `${fakeUrl}/idp/token` });
-    if (path === "/idp/token") return json(200, { access_token: "idp-access", refresh_token: "idp-refresh", expires_in: 3600 });
+    if (path === "/idp/token") return json(200, { access_token: "idp-access", ...(body.code === "no-refresh" ? {} : { refresh_token: "idp-refresh" }), expires_in: 3600 });
     if (path === "/getUsageLimits")
       return json(200, { subscriptionInfo: { subscriptionTitle: "KIRO PRO" }, usageBreakdownList: [{ currentUsage: 1, usageLimit: 100 }] });
     json(404, { error: "not found" });
@@ -262,4 +264,91 @@ test("account detail exposes a credential summary with masked hints", async (t) 
   assert.equal(summary.hasRefreshToken, true);
   assert.equal(summary.refreshTokenHint, "…9xyz");
   assert.ok(summary.expiresAt);
+});
+
+test("sign-in results are stored as issued, without an extra refresh", async (t) => {
+  const { api, calls, waitFor, context } = await createHarness(t);
+  const start = await api("/api/logins/builder-id", { method: "POST", body: JSON.stringify({ region: "us-east-1" }) });
+  await waitFor(start.body.id, "complete");
+  const refreshesBefore = calls.filter((c) => c.body?.grantType === "refresh_token").length;
+  const created = await api(`/api/logins/${start.body.id}/account`, { method: "POST", body: "{}" });
+  assert.equal(created.status, 201);
+  assert.equal(calls.filter((c) => c.body?.grantType === "refresh_token").length, refreshesBefore, "no refresh at account creation");
+  const stored = JSON.parse(context.accounts.get(created.body.id)!.credentials);
+  assert.equal(stored.accessToken, "builder-access", "the token AWS issued at sign-in is kept");
+});
+
+test("external IdP without a refresh token can still be added", async (t) => {
+  const { api, baseUrl, fakeUrl, waitFor, context } = await createHarness(t);
+  const start = await api("/api/logins/kiro", { method: "POST", body: JSON.stringify({ origin: baseUrl }) });
+  const state = new URL(start.body.verificationUrl).searchParams.get("state")!;
+  const first = await fetch(`${baseUrl}/oauth/callback?state=${state}&login_option=external_idp&issuer_url=${encodeURIComponent(`${fakeUrl}/idp`)}&client_id=c&scopes=openid`, { redirect: "manual" });
+  const authorize = new URL(first.headers.get("location")!);
+  await fetch(`${baseUrl}/oauth/callback?state=${authorize.searchParams.get("state")}&code=no-refresh`);
+  await waitFor(start.body.id, "complete");
+  const created = await api(`/api/logins/${start.body.id}/account`, { method: "POST", body: "{}" });
+  assert.equal(created.status, 201, JSON.stringify(created.body));
+  const stored = JSON.parse(context.accounts.get(created.body.id)!.credentials);
+  assert.equal(stored.accessToken, "idp-access");
+  assert.equal(stored.refreshToken, "");
+});
+
+test("Identity Center keeps the typed start URL and always returns to 127.0.0.1", async (t) => {
+  const { api, baseUrl, calls } = await createHarness(t);
+  const port = new URL(baseUrl).port;
+  for (const origin of [`http://localhost:${port}`, `http://LOCALHOST:${port}/`, `http://[::1]:${port}`]) {
+    const start = await api("/api/logins/identity-center", {
+      method: "POST",
+      body: JSON.stringify({ origin, region: "us-east-1", startUrl: "  https://d-9999999999.awsapps.com/start/  " }),
+    });
+    assert.equal(start.status, 201, origin + " " + JSON.stringify(start.body));
+    assert.equal(new URL(start.body.verificationUrl).searchParams.get("redirect_uri"), `http://127.0.0.1:${port}/oauth/callback`, origin);
+    await api(`/api/logins/${start.body.id}`, { method: "DELETE" });
+  }
+  const registration = calls.filter((c) => c.path === "/oidc/client/register").at(-1)!;
+  assert.equal(registration.body.issuerUrl, "https://d-9999999999.awsapps.com/start/", "trailing slash kept, like login-zh.js");
+  assert.deepEqual(registration.body.redirectUris, ["http://127.0.0.1/oauth/callback"]);
+});
+
+test("Kiro portal sign-in URL matches the script's shape", async (t) => {
+  const { api, baseUrl } = await createHarness(t);
+  const port = new URL(baseUrl).port;
+  const start = await api("/api/logins/kiro", { method: "POST", body: JSON.stringify({ origin: `http://LOCALHOST:${port}/dashboard/` }) });
+  const url = new URL(start.body.verificationUrl);
+  assert.deepEqual([...url.searchParams.keys()], ["redirect_from", "state", "code_challenge", "code_challenge_method", "redirect_uri"]);
+  assert.equal(url.searchParams.get("redirect_uri"), `http://localhost:${port}`);
+});
+
+test("callback edge cases: case-sensitive login_option, errors without state, '?' in values", async (t) => {
+  const { api, baseUrl, fakeUrl, waitFor } = await createHarness(t);
+  // login_option is matched exactly, like the script.
+  let start = await api("/api/logins/kiro", { method: "POST", body: JSON.stringify({ origin: baseUrl }) });
+  let state = new URL(start.body.verificationUrl).searchParams.get("state")!;
+  assert.equal((await fetch(`${baseUrl}/oauth/callback?state=${state}&code=x&login_option=Google`)).status, 400);
+  assert.equal((await waitFor(start.body.id, "failed")).status, "failed");
+
+  // An error with no state fails the one pending redirect sign-in instead of hanging.
+  start = await api("/api/logins/kiro", { method: "POST", body: JSON.stringify({ origin: baseUrl }) });
+  const errorPage = await fetch(`${baseUrl}/oauth/callback?error=access_denied&error_description=User%20cancelled`);
+  assert.equal(errorPage.status, 400);
+  assert.match(await errorPage.text(), /User cancelled/);
+  assert.match((await waitFor(start.body.id, "failed")).error, /User cancelled/);
+
+  // A literal "?" inside issuer_url no longer truncates the query.
+  start = await api("/api/logins/kiro", { method: "POST", body: JSON.stringify({ origin: baseUrl }) });
+  state = new URL(start.body.verificationUrl).searchParams.get("state")!;
+  // The old split("?") parse cut the query here, losing client_id/scopes and
+  // failing with "missing issuer_url, client_id or scopes".
+  const page = await fetch(`${baseUrl}/oauth/callback?state=${state}&login_option=external_idp&client_id=c&scopes=openid&issuer_url=${fakeUrl}/idp?x`, { redirect: "manual" });
+  const text = await page.text();
+  assert.doesNotMatch(text, /missing issuer_url, client_id or scopes/);
+  assert.match(text, /discovery failed/i, "the full issuer_url (with ?x) was used for discovery");
+});
+
+test("refresh failures report the upstream reason", async (t) => {
+  const { context } = await createHarness(t);
+  const account = context.accounts.create({
+    credentials: { accessToken: "a", refreshToken: "revoked", clientId: "c", clientSecret: "s", authMethod: "IdC", provider: "BuilderId", region: "us-east-1", expiresAt: new Date(0).toISOString() },
+  });
+  await assert.rejects(() => context.tokens.refreshAccount(account.id), /invalid_grant.*Invalid refresh token provided.*sign in again/);
 });

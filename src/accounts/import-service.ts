@@ -1,4 +1,5 @@
 import { toKiroCanonicalJson } from "./credentials.ts";
+import { getKiroRuntimeRegion } from "../kiro/constants.ts";
 import type { AccountRepository } from "./repository.ts";
 import type { ProxyRepository } from "./proxies.ts";
 import type { TokenManager } from "./token-manager.ts";
@@ -39,6 +40,12 @@ export class AccountImportService {
       enabled?: boolean;
       source: string;
     },
+    /**
+     * Credentials straight from a sign-in flow already carry fresh tokens.
+     * Store them as issued, like the kiro-login scripts do, instead of
+     * refreshing again (which also rejects IdPs without a refresh token).
+     */
+    freshlyIssued = false,
   ): Promise<{ id: number }> {
     const credential = toKiroCanonicalJson(raw) as KiroCredentials;
     if (!credential.accessToken && !credential.refreshToken)
@@ -46,7 +53,14 @@ export class AccountImportService {
     const proxy =
       options.proxyId == null ? null : this.proxies.get(options.proxyId);
     if (options.proxyId != null && !proxy) throw new Error("Proxy not found");
-    const resolved = await this.tokens.convertCredential(credential, proxy);
+    const resolved =
+      freshlyIssued && credential.accessToken
+        ? {
+            ...credential,
+            region: credential.region || "us-east-1",
+            runtimeRegion: getKiroRuntimeRegion(credential),
+          }
+        : await this.tokens.convertCredential(credential, proxy);
     if (this.accounts.hasDuplicate(resolved))
       throw new Error("This account is already in the pool");
     const account = this.accounts.create({
