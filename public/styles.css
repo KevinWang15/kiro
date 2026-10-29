@@ -85,6 +85,12 @@ pre,
   outline: 2px solid var(--accent-ring);
   outline-offset: 1px;
 }
+/* Text selection in the accent violet instead of the browser's default blue.
+   Translucent so it reads on every panel shade; text stays light. */
+::selection {
+  background: #8b5cf66b;
+  color: #fff;
+}
 .hidden {
   display: none !important;
 }
