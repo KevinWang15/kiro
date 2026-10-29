@@ -68,16 +68,23 @@ export function aggregateUsage(response: UsageLimitsResponse): KiroStatusInfo {
       lastCheckedAt: new Date().toISOString(),
     };
   }
-  let currentUsage = breakdown.currentUsageWithPrecision;
-  let usageLimit = breakdown.usageLimitWithPrecision;
-  if (breakdown.freeTrialInfo?.freeTrialStatus === "ACTIVE") {
-    currentUsage += breakdown.freeTrialInfo.currentUsageWithPrecision;
-    usageLimit += breakdown.freeTrialInfo.usageLimitWithPrecision;
+  // Prefer the precise values and fall back to the plain ones, as
+  // get-usage.js does; a missing field must not turn the total into NaN/null.
+  const amount = (precise: unknown, plain: unknown) => {
+    const value = Number(precise ?? plain);
+    return Number.isFinite(value) ? value : 0;
+  };
+  let currentUsage = amount(breakdown.currentUsageWithPrecision, (breakdown as any).currentUsage);
+  let usageLimit = amount(breakdown.usageLimitWithPrecision, (breakdown as any).usageLimit);
+  const trial = breakdown.freeTrialInfo as any;
+  if (trial?.freeTrialStatus === "ACTIVE") {
+    currentUsage += amount(trial.currentUsageWithPrecision, trial.currentUsage);
+    usageLimit += amount(trial.usageLimitWithPrecision, trial.usageLimit);
   }
-  for (const bonus of breakdown.bonuses || []) {
+  for (const bonus of (breakdown.bonuses || []) as any[]) {
     if (bonus.status === "ACTIVE") {
-      currentUsage += bonus.currentUsage;
-      usageLimit += bonus.usageLimit;
+      currentUsage += amount(bonus.currentUsageWithPrecision, bonus.currentUsage);
+      usageLimit += amount(bonus.usageLimitWithPrecision, bonus.usageLimit);
     }
   }
   const remaining = Math.max(usageLimit - currentUsage, 0);
@@ -240,8 +247,15 @@ export class UsageService {
       credentials,
       this.proxies.get(account.proxyId),
     );
-    if (status) this.accounts.updateStatusInfo(id, status);
+    if (!status || !(status.usageLimit > 0)) return null;
+    this.accounts.updateStatusInfo(id, status);
     return status;
+  }
+
+  /** Refresh several accounts in parallel, waiting at most `timeoutMs`. */
+  async refreshNow(ids: number[], timeoutMs = 8000): Promise<void> {
+    const all = Promise.allSettled(ids.map((id) => this.refreshAccountUsage(id)));
+    await Promise.race([all, new Promise((resolve) => setTimeout(resolve, timeoutMs).unref())]);
   }
 
   async refreshAll(): Promise<void> {

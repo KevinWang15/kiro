@@ -127,9 +127,38 @@ export function createServerContext(database: AppDatabase): ServerContext {
   app.post("/api/accounts/parse", (req, res) => {
     try {
       const options = parseCredentialInput(String(req.body?.text || ""));
+      // Preview for the import dialog: what each entry is and whether it can
+      // be imported. Only masked hints leave the server, never full tokens.
+      // Entries in an accounts array that carry no token aren't detected by the
+      // parser at all; count them so the preview can say they were skipped.
+      let skipped = 0;
+      try {
+        const parsed = JSON.parse(String(req.body?.text || ""));
+        const list = Array.isArray(parsed) ? parsed : Array.isArray(parsed?.accounts) ? parsed.accounts : null;
+        if (list) skipped = Math.max(0, list.length - options.length);
+      } catch {}
       res.json({
         count: options.length,
-        accounts: options.map(({ index, label }) => ({ index, label })),
+        skipped,
+        accounts: options.map(({ index, label, canonical }) => {
+          const summary = credentialSummary(canonical as KiroCredentials);
+          const usable = Boolean(canonical.accessToken || canonical.refreshToken);
+          return {
+            index,
+            label,
+            email: summary.email,
+            signIn: summary.signIn,
+            region: summary.region,
+            runtimeRegion: summary.runtimeRegion,
+            hasRefreshToken: summary.hasRefreshToken,
+            hasAccessToken: Boolean(canonical.accessToken),
+            refreshTokenHint: summary.refreshTokenHint,
+            accessTokenHint: summary.accessTokenHint,
+            expiresAt: summary.expiresAt,
+            duplicate: usable && accounts.hasDuplicate(canonical as KiroCredentials),
+            problem: usable ? null : "No access token or refresh token",
+          };
+        }),
       });
     } catch (error) {
       res.status(400).json({ error: (error as Error).message });
@@ -146,11 +175,9 @@ export function createServerContext(database: AppDatabase): ServerContext {
       rawAccounts,
       req.body?.proxyMode || "none",
     );
-    for (const id of result.accountIds) {
-      setImmediate(
-        () => void usageService.refreshAccountUsage(id).catch(() => undefined),
-      );
-    }
+    // Fetch credits now so the table shows them right away; anything slower
+    // than the cap keeps going in the background and the UI polls for it.
+    await usageService.refreshNow(result.accountIds);
     res.json({ success: true, ...result });
   });
   app.post("/api/accounts/import", importHandler);
@@ -170,8 +197,8 @@ export function createServerContext(database: AppDatabase): ServerContext {
     enabled: body?.enabled === undefined ? undefined : Boolean(body.enabled),
     source,
   });
-  const createdAccount = (id: number) => {
-    setImmediate(() => void usageService.refreshAccountUsage(id).catch(() => undefined));
+  const createdAccount = async (id: number) => {
+    await usageService.refreshNow([id]);
     return { success: true, id };
   };
 
@@ -181,7 +208,7 @@ export function createServerContext(database: AppDatabase): ServerContext {
       const body = req.body || {};
       try {
         const { id } = await importer.createOne(body.credentials, accountOptions(body, body.source || "Added manually"));
-        res.status(201).json(createdAccount(id));
+        res.status(201).json(await createdAccount(id));
       } catch (error) {
         res.status(400).json({ error: (error as Error).message });
       }
@@ -222,7 +249,7 @@ export function createServerContext(database: AppDatabase): ServerContext {
       if (!credentials) return void res.status(409).json({ error: "This sign-in was already used" });
       try {
         const { id } = await importer.createOne(credentials, accountOptions(req.body, `Signed in with ${view.label}`), true);
-        res.status(201).json(createdAccount(id));
+        res.status(201).json(await createdAccount(id));
       } catch (error) {
         res.status(400).json({ error: (error as Error).message });
       }

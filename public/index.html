@@ -31,29 +31,7 @@
   <body>
     <div class="progress-bar" id="progress-bar" aria-hidden="true"></div>
     <header class="titlebar">
-      <div class="titlebar-tabs">
-        <a class="workspace-tab active" href="/">
-          <i data-lucide="server"></i><span>Kiro adapter</span>
-          <span
-            class="count-pill"
-            id="tab-account-count"
-            role="status"
-            aria-label="Loading accounts"
-            ><span class="spinner xs"></span
-          ></span>
-          <script>
-            // Show the last known count before first paint (no spinner/0 flash).
-            try {
-              const cached = localStorage.getItem("kiro.accountCount");
-              if (cached !== null) {
-                const pill = document.getElementById("tab-account-count");
-                pill.textContent = cached;
-                pill.setAttribute("aria-label", cached + " accounts");
-              }
-            } catch {}
-          </script>
-        </a>
-      </div>
+      <div class="titlebar-spacer" aria-hidden="true"></div>
       <button
         class="command-bar"
         id="copy-base-url"
@@ -78,8 +56,10 @@
             class="ghost-body"
             d="M12 2a8 8 0 0 0-8 8v12l3-3 2.5 2.5L12 19l2.5 2.5L17 19l3 3V10a8 8 0 0 0-8-8z"
           />
-          <ellipse class="ghost-eye" cx="9.2" cy="10.5" rx="1.1" ry="1.8" />
-          <ellipse class="ghost-eye" cx="14.8" cy="10.5" rx="1.1" ry="1.8" />
+          <g class="ghost-eyes">
+            <ellipse class="ghost-eye" cx="9.2" cy="10.5" rx="1.1" ry="1.8" />
+            <ellipse class="ghost-eye" cx="14.8" cy="10.5" rx="1.1" ry="1.8" />
+          </g>
         </svg>
       </a>
       <a href="/" data-nav="accounts" title="Accounts" aria-label="Accounts"
@@ -158,14 +138,6 @@
               <h2>Accounts</h2>
               <span id="account-count"></span>
             </div>
-            <button
-              class="icon-button"
-              id="reload-accounts"
-              title="Reload accounts"
-              aria-label="Reload accounts"
-            >
-              <i data-lucide="refresh-cw"></i>
-            </button>
           </div>
           <div class="table-wrap">
             <table class="fixed-table accounts-table">
@@ -194,10 +166,15 @@
               OAuth credentials are converted to fresh access tokens
               automatically.
             </p>
-            <button class="button primary" data-open-import>
-              <i data-lucide="user-plus"></i
-              ><span>Import your first account</span>
-            </button>
+            <div class="empty-actions">
+              <button class="button primary" data-open-import>
+                <i data-lucide="user-plus"></i
+                ><span>Import your first account</span>
+              </button>
+              <button class="button" data-open-bulk-import>
+                <i data-lucide="file-json"></i><span>Bulk import JSON</span>
+              </button>
+            </div>
           </div>
         </div>
       </section>
@@ -420,16 +397,20 @@
         <label
           >Credential JSON or raw API key<textarea
             id="import-text"
-            rows="13"
+            rows="10"
             spellcheck="false"
             placeholder='{"accounts":[{"credentials":{"refreshToken":"...","provider":"Google"}}]}'
           ></textarea>
         </label>
         <div class="form-row">
-          <div>
-            <span class="field-label">Detected accounts</span
-            ><strong id="detected-accounts">0</strong>
-            <div id="parse-error" class="error-text"></div>
+          <div class="detected">
+            <div class="detected-head">
+              <span class="field-label">Detected accounts</span>
+              <span class="detected-count" id="detected-accounts">0</span>
+              <span class="detected-summary" id="detected-summary"></span>
+            </div>
+            <ul class="detected-list" id="detected-list" aria-label="Detected accounts"></ul>
+            <div id="parse-error" class="error-text" role="alert"></div>
           </div>
           <label
             >Proxy assignment<select id="import-proxy-mode">

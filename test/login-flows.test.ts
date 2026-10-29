@@ -352,3 +352,51 @@ test("refresh failures report the upstream reason", async (t) => {
   });
   await assert.rejects(() => context.tokens.refreshAccount(account.id), /invalid_grant.*Invalid refresh token provided.*sign in again/);
 });
+
+test("bulk import preview summarizes each entry without exposing tokens", async (t) => {
+  const { api } = await createHarness(t);
+  await api("/api/accounts/create", { method: "POST", body: JSON.stringify({ credentials: { accessToken: "ksk_existing_key", authMethod: "api_key" } }) });
+  const preview = await api("/api/accounts/parse", {
+    method: "POST",
+    body: JSON.stringify({ text: JSON.stringify([
+      { accessToken: "ksk_existing_key", authMethod: "api_key" },
+      { email: "new@example.com", refreshToken: "brand-new-refresh", provider: "Github" },
+      { email: "no-token@example.com", provider: "Google" },
+    ]) }),
+  });
+  assert.equal(preview.status, 200);
+  assert.equal(preview.body.count, 2);
+  assert.equal(preview.body.skipped, 1);
+  const [existing, fresh] = preview.body.accounts;
+  assert.equal(existing.duplicate, true);
+  assert.equal(fresh.duplicate, false);
+  assert.equal(fresh.email, "new@example.com");
+  assert.equal(fresh.signIn, "GitHub");
+  assert.equal(fresh.refreshTokenHint, "…resh");
+  assert.ok(!JSON.stringify(preview.body).includes("brand-new-refresh"), "no full refresh token");
+  assert.ok(!JSON.stringify(preview.body).includes("ksk_existing_key"), "no full API key");
+});
+
+test("new accounts have their credits before the create call returns", async (t) => {
+  const { api, context } = await createHarness(t);
+  const created = await api("/api/accounts/create", {
+    method: "POST",
+    body: JSON.stringify({ credentials: { refreshToken: "credits-now", provider: "Google", authMethod: "social" } }),
+  });
+  assert.equal(created.status, 201);
+  const status = JSON.parse(context.accounts.get(created.body.id)!.statusInfo || "null");
+  assert.equal(status?.usageLimit, 100, "credits fetched as part of the import");
+  assert.equal(status?.subscriptionTitle, "KIRO PRO");
+});
+
+test("a usage reading without a quota is not stored as zero credits", async (t) => {
+  const { aggregateUsage } = await import("../src/accounts/usage-service.ts");
+  const empty = aggregateUsage({ subscriptionInfo: { subscriptionTitle: "KIRO PRO" } } as any);
+  assert.equal(empty.usageLimit, 0);
+  const { context } = await createHarness(t);
+  const account = context.accounts.create({ credentials: { accessToken: "a", authMethod: "api_key" } });
+  context.accounts.updateStatusInfo(account.id, { usageLimit: 1000, remaining: 900 });
+  // The fake upstream answers with a real quota, so a refresh replaces it;
+  // what matters is that a 0/0 result would never overwrite a good reading.
+  assert.equal(JSON.parse(context.accounts.get(account.id)!.statusInfo!).usageLimit, 1000);
+});

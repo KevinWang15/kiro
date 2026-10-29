@@ -109,44 +109,8 @@ pre,
   background: var(--canvas);
   z-index: 20;
 }
-.titlebar-tabs {
-  display: flex;
-  align-items: center;
-  gap: 4px;
+.titlebar-spacer {
   min-width: 0;
-}
-.workspace-tab {
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
-  height: 28px;
-  padding: 0 10px;
-  border-radius: 8px;
-  color: var(--muted);
-  font-size: 13px;
-  font-weight: 500;
-  white-space: nowrap;
-}
-.workspace-tab svg {
-  width: 15px;
-  height: 15px;
-}
-.workspace-tab.active {
-  background: var(--accent-soft);
-  color: var(--accent-text);
-  font-weight: 600;
-}
-.count-pill {
-  display: inline-grid;
-  place-items: center;
-  min-width: 18px;
-  height: 18px;
-  padding: 0 5px;
-  border-radius: 9px;
-  background: var(--accent);
-  color: #fff;
-  font-size: 11px;
-  font-weight: 600;
 }
 .command-bar {
   display: flex;
@@ -245,6 +209,11 @@ pre,
 }
 .rail-logo .ghost-eye {
   fill: #111114;
+}
+/* The eyes follow the pointer while hovering (app.js sets the translate);
+   the transition makes them glide and settle back to center on leave. */
+.rail-logo .ghost-eyes {
+  transition: transform 0.18s ease-out;
 }
 .rail a[data-nav] {
   position: relative;
@@ -527,6 +496,9 @@ tbody tr.loading-row:hover {
   }
 }
 @media (prefers-reduced-motion: reduce) {
+  .rail-logo .ghost-eyes {
+    transition: none;
+  }
   .spinner,
   .chart.loading::after,
   .progress-bar::before,
@@ -899,6 +871,25 @@ tbody tr:hover {
   margin-bottom: 6px;
   color: var(--text-secondary);
 }
+.credit-pending {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--muted);
+}
+.credit-pending .spinner {
+  width: 12px;
+  height: 12px;
+  border-width: 2px;
+}
+.summary-card strong .credit-pending {
+  font-size: 15px;
+  font-weight: 500;
+}
+.summary-card strong .credit-pending .spinner {
+  width: 16px;
+  height: 16px;
+}
 .credit-track {
   height: 4px;
   background: var(--selected);
@@ -945,6 +936,12 @@ tbody tr:hover {
   font-size: 15px;
   font-weight: 600;
   margin: 0 0 6px;
+}
+.empty-actions {
+  display: flex;
+  justify-content: center;
+  gap: 8px;
+  flex-wrap: wrap;
 }
 .empty p {
   max-width: 550px;
@@ -1099,6 +1096,167 @@ tbody tr:hover {
 }
 .notyf__message {
   line-height: 1.5;
+}
+
+/* ---------- Bulk import: detected accounts ---------- */
+.form-row > .detected {
+  flex: 1;
+  min-width: 0;
+}
+.detected-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-bottom: 7px;
+}
+.detected-head .field-label {
+  margin: 0;
+}
+.detected-count {
+  display: inline-grid;
+  place-items: center;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 6px;
+  border-radius: 10px;
+  background: var(--selected);
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 600;
+}
+.detected-summary {
+  color: var(--muted);
+  font-size: 12px;
+}
+/* Up to ~8 rows, then a real, grabbable scrollbar (100-account imports).
+   The height also follows the window so the dialog footer stays visible. */
+.detected-list {
+  list-style: none;
+  margin: 0;
+  padding: 4px;
+  max-height: min(258px, 30vh);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--chrome);
+  scrollbar-width: auto;
+  scrollbar-color: #4a4a55 transparent;
+  scrollbar-gutter: stable;
+}
+.detected-list::-webkit-scrollbar {
+  width: 10px;
+}
+.detected-list::-webkit-scrollbar-thumb {
+  background: #4a4a55;
+  border: 2px solid var(--chrome);
+  border-radius: 6px;
+}
+.detected-list::-webkit-scrollbar-thumb:hover {
+  background: #5d5d6a;
+}
+.detected-list::-webkit-scrollbar-track {
+  background: transparent;
+}
+.detected-item {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 30px;
+  padding: 0 8px;
+  border-radius: 6px;
+  font-size: 13px;
+  cursor: default;
+  outline: none;
+}
+.detected-item:hover,
+.detected-item:focus-visible {
+  background: var(--panel-raised);
+}
+.detected-item:focus-visible {
+  box-shadow: inset 0 0 0 1px var(--accent-ring);
+}
+.detected-index {
+  width: 24px;
+  flex: none;
+  color: var(--faint);
+  font-size: 12px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.detected-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text);
+}
+.detected-provider {
+  flex: none;
+  color: var(--muted);
+  font-size: 12px;
+}
+.detected-tag {
+  flex: none;
+  padding: 1px 7px;
+  border-radius: 6px;
+  font-size: 11px;
+}
+.detected-item.is-duplicate .detected-tag {
+  background: var(--selected);
+  color: var(--muted);
+}
+.detected-item.is-duplicate .detected-name {
+  color: var(--muted);
+}
+.detected-item.is-broken .detected-tag {
+  background: var(--amber-soft);
+  color: var(--amber);
+}
+/* Hover card. Positioned with fixed coordinates by app.js so the list's
+   scroll container doesn't clip it. */
+.detected-card {
+  position: fixed;
+  z-index: 40;
+  display: none;
+  width: 320px;
+  padding: 10px 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: 9px;
+  background: var(--panel-raised);
+  box-shadow: 0 14px 40px #000a;
+  pointer-events: none;
+}
+.detected-item.show-card .detected-card {
+  display: block;
+}
+.detected-card dl {
+  display: grid;
+  gap: 5px;
+  margin: 0;
+  font-size: 12px;
+}
+.detected-card dl > div {
+  display: flex;
+  justify-content: space-between;
+  gap: 14px;
+}
+.detected-card dt {
+  color: var(--muted);
+  flex: none;
+}
+.detected-card dd {
+  margin: 0;
+  color: var(--text);
+  text-align: right;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.detected-card code {
+  font-size: 12px;
+  color: var(--text-secondary);
 }
 
 /* ---------- Account dialogs ---------- */
