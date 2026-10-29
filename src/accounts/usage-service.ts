@@ -8,7 +8,6 @@ import {
   getSystemRuntimeInfo,
 } from "../kiro/handler.ts";
 import { getKiroRuntimeBaseUrl } from "../kiro/constants.ts";
-import { isKiroPremiumUsageLimit } from "../kiro/utils.ts";
 import { config } from "../config.ts";
 import { isApiKeyAccount } from "./token-manager.ts";
 import type { AccountRepository } from "./repository.ts";
@@ -63,7 +62,6 @@ export function aggregateUsage(response: UsageLimitsResponse): KiroStatusInfo {
       usageLimit: 0,
       remaining: 0,
       usagePercentage: 0,
-      isPremium: false,
       nextResetAt: null,
       lastCheckedAt: new Date().toISOString(),
     };
@@ -99,7 +97,6 @@ export function aggregateUsage(response: UsageLimitsResponse): KiroStatusInfo {
     usageLimit: Math.round(usageLimit * 100) / 100,
     remaining: Math.round(remaining * 100) / 100,
     usagePercentage: Math.round(usagePercentage * 100) / 100,
-    isPremium: isKiroPremiumUsageLimit(usageLimit),
     nextResetAt,
     lastCheckedAt: new Date().toISOString(),
   };

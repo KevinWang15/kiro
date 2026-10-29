@@ -115,26 +115,13 @@ export function computePrefixHash(
 }
 
 export const CACHE_KEY_PREFIX = "kiro_cache_sim:";
-export const STANDARD_CACHE_TTL_MS = 3 * 60 * 1000;
-
-export function isPreferentialKiroCacheEnabled(
-  env: NodeJS.ProcessEnv = process.env,
-): boolean {
-  return env.PREFERENTIAL_KIRO_CACHE?.trim().toLowerCase() === "true";
-}
-
-export function resolveDefaultCacheTtlMs(
-  env: NodeJS.ProcessEnv = process.env,
-): number {
-  return isPreferentialKiroCacheEnabled(env)
-    ? 60 * 1000
-    : STANDARD_CACHE_TTL_MS;
-}
+// Same as Anthropic's default prompt cache lifetime.
+export const STANDARD_CACHE_TTL_MS = 5 * 60 * 1000;
 
 export class CacheSimulator {
   constructor(
     private readonly store: ICacheStore,
-    private readonly ttlMs: number = resolveDefaultCacheTtlMs(),
+    private readonly ttlMs: number = STANDARD_CACHE_TTL_MS,
   ) {}
 
   async simulate(
@@ -147,9 +134,7 @@ export class CacheSimulator {
       const fullKey =
         CACHE_KEY_PREFIX + computePrefixHash(system, messages, conversationId);
       try {
-        if (Math.random() < (isPreferentialKiroCacheEnabled() ? 0.35 : 0.6)) {
-          await this.store.set(fullKey, totalContextTokens, this.ttlMs);
-        }
+        await this.store.set(fullKey, totalContextTokens, this.ttlMs);
       } catch (error) {
         console.warn("[CacheSimulator] Failed to store cache hash:", error);
       }

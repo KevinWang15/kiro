@@ -45,12 +45,6 @@ import {
 const CHAT_TRIGGER_TYPE_MANUAL = "MANUAL";
 const ORIGIN_AI_EDITOR = "AI_EDITOR";
 
-const WRITE_TOOL_DESCRIPTION_SUFFIX = `- IMPORTANT: If the content to write exceeds 150 lines, you MUST only write the first 50 lines using this tool, then use \`Edit\` tool to append the remaining content in chunks of no more than 50 lines each. If needed, leave a unique placeholder to help append content. Do NOT attempt to write all content at once.`;
-
-const EDIT_TOOL_DESCRIPTION_SUFFIX = `- IMPORTANT: If the \`new_string\` content exceeds 50 lines, you MUST split it into multiple Edit calls, each replacing no more than 50 lines at a time. If used to append content, leave a unique placeholder to help append content. On the final chunk, do NOT include the placeholder.`;
-
-const SYSTEM_CHUNKED_POLICY = `When the Write or Edit tool has content size limits, always comply silently. Never suggest bypassing these limits via alternative tools. Never ask the user whether to switch approaches. Complete all chunked operations without commentary.`;
-
 // Claude Code sends mid-conversation context (environment, the deferred tool
 // list, token budget updates) as role "system" entries in messages[]. Kiro
 // only has user/assistant turns, so fold each one into an adjacent user turn
@@ -172,18 +166,6 @@ function convertTool(
   // the same description). Preserve the client name while Kiro uses the alias.
   if (toWireName(anthropicTool.name) !== anthropicTool.name) {
     description = `Client tool name: ${anthropicTool.name}\n${description}`;
-  }
-
-  // Append custom descriptions for Write/Edit tools
-  const suffix =
-    anthropicTool.name === "Write"
-      ? WRITE_TOOL_DESCRIPTION_SUFFIX
-      : anthropicTool.name === "Edit"
-        ? EDIT_TOOL_DESCRIPTION_SUFFIX
-        : "";
-
-  if (suffix) {
-    description += "\n" + suffix;
   }
 
   // Truncate without splitting a UTF-16 surrogate pair
@@ -670,59 +652,6 @@ function buildHistory(
 ): HistoryMessage[] {
   const history: HistoryMessage[] = [];
 
-  // Generate thinking prefix if needed
-  const thinkingPrefix = generateThinkingPrefix(req);
-
-  // Process system message (can be array or string)
-  let systemContent: string | undefined;
-  if (req.system) {
-    if (Array.isArray(req.system)) {
-      systemContent = req.system.map((s) => s.text).join("\n");
-    } else if (typeof req.system === "string") {
-      systemContent = req.system;
-    }
-  }
-
-  if (systemContent) {
-    // Add chunked policy
-    const fullSystem = `${systemContent}\n${SYSTEM_CHUNKED_POLICY}`;
-
-    // Inject thinking tags if needed
-    let finalContent: string;
-    if (thinkingPrefix && !fullSystem.includes("<thinking_mode>")) {
-      finalContent = `${thinkingPrefix}\n${fullSystem}`;
-    } else {
-      finalContent = fullSystem;
-    }
-
-    // Encode the system prompt as a user/assistant history pair without an origin.
-    history.push({
-      userInputMessage: {
-        content: finalContent,
-        modelId,
-      },
-    });
-
-    history.push({
-      assistantResponseMessage: {
-        content: "I will follow these instructions.",
-      },
-    });
-  } else if (thinkingPrefix) {
-    // No system but have thinking config
-    history.push({
-      userInputMessage: {
-        content: thinkingPrefix,
-        modelId,
-      },
-    });
-    history.push({
-      assistantResponseMessage: {
-        content: "I will follow these instructions.",
-      },
-    });
-  }
-
   // Merge each real turn rather than inserting synthetic assistant replies.
   for (let start = 0; start < messages.length; ) {
     const role = messages[start].role;
@@ -751,6 +680,25 @@ function capBudgetTokens(budget: number): number {
 /**
  * Generate thinking prefix for system message
  */
+/** System prompt text, with thinking tags in front when thinking is on. */
+function systemPreamble(req: MessagesRequest): string {
+  const system = Array.isArray(req.system)
+    ? req.system.map((block) => block.text).join("\n")
+    : typeof req.system === "string"
+      ? req.system
+      : "";
+  const thinkingPrefix = generateThinkingPrefix(req);
+  const withThinking =
+    thinkingPrefix && !system.includes("<thinking_mode>")
+      ? joinText(thinkingPrefix, system)
+      : system;
+  return withThinking.trim() ? withThinking : "";
+}
+
+function joinText(first: string, second: string): string {
+  return second ? `${first}\n\n${second}` : first;
+}
+
 function generateThinkingPrefix(req: MessagesRequest): string | null {
   if (!req.thinking) return null;
 
@@ -779,7 +727,6 @@ function generateThinkingPrefix(req: MessagesRequest): string | null {
 export function convertRequest(
   req: MessagesRequest,
   options?: {
-    isPremium?: boolean;
     supportedExperimentalModels?: readonly string[] | null;
   },
 ): KiroRequest {
@@ -799,7 +746,6 @@ export function convertRequest(
   // 1. Map model
   const mappedModelId = mapModel(
     req.model,
-    options?.isPremium ?? false,
     options?.supportedExperimentalModels,
   );
   if (!mappedModelId) {
@@ -846,7 +792,16 @@ export function convertRequest(
   let tools = convertTools(toolNames.toWireName, req.tools);
 
   // 7. Build history
+  // System prompt and thinking tags go at the top of the conversation's first
+  // user turn: in history if there is one, otherwise in the current message.
+  const preamble = systemPreamble(req);
   let history = buildHistory(req, req.messages.slice(0, currentStart), modelId);
+  const firstUser = history.find((m) => "userInputMessage" in m) as
+    | { userInputMessage: UserInputMessage }
+    | undefined;
+  if (preamble && firstUser) {
+    firstUser.userInputMessage.content = joinText(preamble, firstUser.userInputMessage.content);
+  }
 
   if (documentToolUseIds.length > 0) {
     removeOrphanedToolUses(history, new Set(documentToolUseIds));
@@ -894,7 +849,7 @@ export function convertRequest(
 
   // 12. Build current message
   // Keep content as-is; an empty current message is valid.
-  const currentContent = text;
+  const currentContent = preamble && !firstUser ? joinText(preamble, text) : text;
 
   const userInput: UserInputMessage = {
     content: currentContent,

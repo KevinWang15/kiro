@@ -21,7 +21,6 @@ import {
   CacheSimulator,
   InMemoryCacheStore,
   SystemClock,
-  isPreferentialKiroCacheEnabled,
 } from "./cache-simulation.ts";
 import {
   BufferedStreamContext,
@@ -93,18 +92,10 @@ function getKiroFailureMessage(
   return `Kiro upstream exception ${event.exceptionType}${details}`;
 }
 
-function buildAnthropicInvalidRequestError(
-  message: string,
-): Record<string, unknown> {
-  return {
-    type: "error",
-    error: {
-      type: "invalid_request_error",
-      message,
-    },
-  };
-}
-
+// Claude Code puts an "x-anthropic-billing-header: ...; cch=<hash>;" line in
+// its system prompt. The cch value changes on every request, so leaving it in
+// makes each system prompt unique, which breaks prefix matching (prompt cache)
+// on every turn. Drop only the cch parameter; everything else stays.
 const ANTHROPIC_BILLING_HEADER_LINE_PATTERN =
   /(x-anthropic-billing-header\s*:\s*)([^\r\n]*)/gi;
 const CCH_BILLING_HEADER_PARAM_PATTERN = /^cch\s*=/i;
@@ -134,11 +125,7 @@ function stripCchFromAnthropicBillingHeaderText(text: string): string {
   );
 }
 
-export function sanitizePreferentialKiroCacheRequestBody(
-  requestBody: MessagesRequest,
-): void {
-  if (!isPreferentialKiroCacheEnabled()) return;
-
+export function stripBillingHeaderCch(requestBody: MessagesRequest): void {
   if (typeof requestBody.system === "string") {
     requestBody.system = stripCchFromAnthropicBillingHeaderText(
       requestBody.system,
@@ -375,14 +362,13 @@ export default class KiroApiProviderHandler {
     originalBody: MessagesRequest,
     extraConfig: ProviderExtraConfig | null,
   ): KiroRequest {
-    sanitizePreferentialKiroCacheRequestBody(originalBody);
+    stripBillingHeaderCch(originalBody);
     ensureClaudeModel(originalBody?.model);
 
     // Override thinking config from model name if needed
     overrideThinkingFromModelName(originalBody);
 
     const result = convertRequest(originalBody, {
-      isPremium: extraConfig?.isPremium ?? false,
       supportedExperimentalModels: extraConfig?.supportedExperimentalModels,
     });
 
@@ -820,25 +806,10 @@ export default class KiroApiProviderHandler {
     modifiedRequestBody: KiroRequest,
   ): Promise<{ body: unknown; headers?: Record<string, string> }> {
     if (statusCode != 200) {
-      let responseString: string;
-      if (Buffer.isBuffer(responseBody)) {
-        responseString = responseBody.toString();
-        if (
-          (statusCode == 403 || statusCode == 429) &&
-          (responseString.indexOf("Due to suspicious activity") >= 0 ||
-            responseString.indexOf(" Kiro ") >= 0 ||
-            responseString.indexOf(" kiro ") >= 0 ||
-            responseString.indexOf("https://app.kiro.dev/account/usage") >= 0 ||
-            responseString.indexOf(
-              "https://support.aws.amazon.com/#/contacts/kiro",
-            ) >= 0 ||
-            responseString.indexOf("https://aws.amazon.com/contact-us/") >= 0)
-        ) {
-          responseString = `{"message":"Server is having temporary issues, please try again later"}`;
-        }
-      } else {
-        responseString = Buffer.from(responseBody, "utf-8").toString();
-      }
+      // Kiro's error is passed through unchanged.
+      const responseString = Buffer.isBuffer(responseBody)
+        ? responseBody.toString()
+        : Buffer.from(responseBody, "utf-8").toString();
 
       // Kiro sometimes answers errors with plain text or HTML. Keep its words
       // instead of surfacing a JSON parse error as the failure reason.
@@ -849,19 +820,6 @@ export default class KiroApiProviderHandler {
         const text = responseString.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim().slice(0, 300);
         parsedBody = { message: text ? `Kiro returned HTTP ${statusCode}: ${text}` : `Kiro returned HTTP ${statusCode} with no details` };
       }
-      if (
-        getKiroUnrecoverableErrorReason(
-          statusCode,
-          parsedBody,
-          responseString,
-        ) === "input_too_long"
-      ) {
-        return {
-          body: buildAnthropicInvalidRequestError("Prompt is too long"),
-          headers: { "content-type": "application/json" },
-        };
-      }
-
       return { body: parsedBody };
     }
 

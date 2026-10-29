@@ -15,7 +15,7 @@ function requestFor(name: string): MessagesRequest {
   };
 }
 function wireName(request: MessagesRequest): string {
-  return convertRequest(request, { isPremium: true }).conversationState
+  return convertRequest(request).conversationState
     .currentMessage.userInputMessage.userInputMessageContext!.tools![0]
     .toolSpecification.name;
 }
@@ -32,7 +32,7 @@ test("tool names preserve short names and safely distinguish long MCP names", ()
   assert.equal(wireName(requestFor("T".repeat(64))), "T".repeat(64));
   const request = requestFor(longName);
   const original = structuredClone(request);
-  const converted = convertRequest(request, { isPremium: true });
+  const converted = convertRequest(request);
   const spec = converted.conversationState.currentMessage.userInputMessage
     .userInputMessageContext!.tools![0].toolSpecification;
   assert.match(spec.name, /^[A-Za-z0-9_-]{1,64}$/);
@@ -112,7 +112,7 @@ for (const mode of ["json", "buffered SSE", "live SSE"] as const) {
   test(`tool names and JSON arguments round-trip through ${mode}`, async () => {
     const request = requestFor(longName);
     request.stream = mode !== "json";
-    const modified = convertRequest(request, { isPremium: true });
+    const modified = convertRequest(request);
     const bytes = toolStream(wireName(request));
     const handler = new KiroApiProviderHandler();
     if (mode === "json") {

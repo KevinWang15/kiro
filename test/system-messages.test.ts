@@ -6,7 +6,7 @@ import type { MessagesRequest } from "../src/kiro/types.ts";
 function convert(messages: MessagesRequest["messages"]) {
   const request: MessagesRequest = { model: "claude-opus-5.5", messages };
   const original = structuredClone(request);
-  const state = convertRequest(request, { isPremium: true }).conversationState;
+  const state = convertRequest(request).conversationState;
   assert.deepEqual(request, original);
   return state;
 }

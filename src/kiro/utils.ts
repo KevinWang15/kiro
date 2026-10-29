@@ -11,7 +11,6 @@
 import { v4 as uuidv4 } from "uuid";
 import { type ToolResult, type HistoryMessage } from "./types.ts";
 
-const KIRO_PREMIUM_USAGE_LIMIT_THRESHOLD = 600;
 
 // ============================================================================
 // Thinking Tag Detection
@@ -207,24 +206,25 @@ export function findCharBoundary(s: string, target: number): number {
  * Claude Code format: user_xxx_account__session_uuid
  * Example: user_0dede..._account__session_8bb5523b-ec7c-4540-a9ca-beb6d79f1552
  */
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * Claude Code's session ID from metadata.user_id. Two formats exist:
+ *   JSON:   {"device_id":"…","account_uuid":"…","session_id":"<uuid>"}   (current)
+ *   legacy: user_<hash>_account_<uuid>_session_<uuid>
+ */
 export function extractSessionId(userId: string): string | null {
-  const SESSION_PREFIX = "session_";
-  const pos = userId.indexOf(SESSION_PREFIX);
-
-  if (pos === -1) return null;
-
-  const sessionPart = userId.substring(pos + SESSION_PREFIX.length);
-
-  // UUID format: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx (36 chars)
-  if (sessionPart.length < 36) return null;
-
-  const uuid = sessionPart.substring(0, 36);
-
-  // Validate UUID format (simple check)
-  const dashCount = uuid.split("-").length - 1;
-  if (dashCount !== 4) return null;
-
-  return uuid;
+  const trimmed = userId.trim();
+  if (trimmed.startsWith("{")) {
+    try {
+      const sessionId = JSON.parse(trimmed)?.session_id;
+      return typeof sessionId === "string" && UUID_PATTERN.test(sessionId) ? sessionId : null;
+    } catch {
+      return null;
+    }
+  }
+  const match = /session_([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i.exec(trimmed);
+  return match ? match[1] : null;
 }
 
 /**
@@ -379,79 +379,6 @@ export function removeOrphanedToolUses(
 // Model Mapping
 // ============================================================================
 
-type KiroStatusInfoLike = {
-  usageLimit?: unknown;
-  isPremium?: unknown;
-};
-
-function isPlainObject(value: unknown): value is Record<string, unknown> {
-  return !!value && typeof value === "object" && !Array.isArray(value);
-}
-
-function normalizeNumber(value: unknown): number | null {
-  if (typeof value === "number" && Number.isFinite(value)) {
-    return value;
-  }
-
-  if (typeof value === "string") {
-    const parsed = Number.parseFloat(value);
-    if (Number.isFinite(parsed)) {
-      return parsed;
-    }
-  }
-
-  return null;
-}
-
-export function isKiroPremiumUsageLimit(
-  usageLimit: number | null | undefined,
-): boolean {
-  return (
-    typeof usageLimit === "number" &&
-    Number.isFinite(usageLimit) &&
-    usageLimit > KIRO_PREMIUM_USAGE_LIMIT_THRESHOLD
-  );
-}
-
-export function parseKiroStatusInfo(
-  rawStatusInfo?: string | null,
-): KiroStatusInfoLike | null {
-  if (typeof rawStatusInfo !== "string") {
-    return null;
-  }
-
-  const trimmed = rawStatusInfo.trim();
-  if (!trimmed) {
-    return null;
-  }
-
-  try {
-    const parsed = JSON.parse(trimmed);
-    return isPlainObject(parsed) ? (parsed as KiroStatusInfoLike) : null;
-  } catch {
-    return null;
-  }
-}
-
-export function isKiroPremiumFromStatusInfo(
-  rawStatusInfo?: string | null,
-): boolean {
-  const statusInfo = parseKiroStatusInfo(rawStatusInfo);
-  if (!statusInfo) {
-    return false;
-  }
-
-  if (typeof statusInfo.isPremium === "boolean") {
-    return statusInfo.isPremium;
-  }
-
-  return isKiroPremiumUsageLimit(normalizeNumber(statusInfo.usageLimit));
-}
-
-export function shouldPreferPremiumKiroAccount(model: string): boolean {
-  return mapModel(model, true) !== mapModel(model, false);
-}
-
 function normalizeExperimentalModelName(model: string): string {
   return model.trim().toLowerCase();
 }
@@ -506,53 +433,37 @@ export function supportsKiroExperimentalModel(
 }
 
 /**
- * Map Anthropic model names to Kiro model IDs
+ * Translate an Anthropic model name to the Kiro model ID for the same model.
+ *
+ * This only rewrites the name format (dashes to a dotted version, date
+ * suffix dropped); it never swaps in a different model. If Kiro doesn't
+ * serve the requested model, its own error is returned to the client.
+ *   claude-opus-4-6-20260101  -> claude-opus-4.6
+ *   claude-sonnet-4-5         -> claude-sonnet-4.5
+ *   claude-opus-5-5           -> claude-opus-5.5
+ *   !<id>                     -> <id> sent as-is (escape hatch)
  */
 export function mapModel(
   model: string,
-  isPremium: boolean = false,
   supportedExperimentalModels?: readonly string[] | null,
 ): string | null {
-  if (model.startsWith("!")) {
-    return model;
-  }
-
-  const lower = model.toLowerCase();
-  if (lower.includes("haiku")) {
-    return "claude-haiku-4.5";
-  }
-
-  const supportedExperimentalModelId = getSupportedKiroExperimentalModelId(
+  if (typeof model !== "string" || !model.trim()) return null;
+  if (model.startsWith("!")) return model;
+  const supported = getSupportedKiroExperimentalModelId(
     model,
     supportedExperimentalModels,
   );
-  if (supportedExperimentalModelId) {
-    return supportedExperimentalModelId;
-  }
+  if (supported) return supported;
+  return toKiroModelId(model);
+}
 
-  if (lower.includes("fable")) {
-    return isPremium ? "claude-opus-5.5" : "claude-sonnet-4.5";
-  }
-
-  if (lower.includes("sonnet")) {
-    if (lower.includes("4-5") || lower.includes("4.5")) {
-      return "claude-sonnet-4.5";
-    }
-    if (lower.includes("4-6") || lower.includes("4.6")) {
-      return isPremium ? "claude-sonnet-4.6" : "claude-sonnet-4.5";
-    }
-    return isPremium ? "claude-sonnet-5.5" : "claude-sonnet-4.5";
-  }
-  if (lower.includes("opus")) {
-    if (lower.includes("4-5") || lower.includes("4.5")) {
-      return isPremium ? "claude-opus-4.5" : "claude-sonnet-4.5";
-    }
-    if (lower.includes("4-6") || lower.includes("4.6")) {
-      return isPremium ? "claude-opus-4.6" : "claude-sonnet-4.5";
-    }
-    return isPremium ? "claude-opus-5.5" : "claude-sonnet-4.5";
-  }
-  return null;
+/** "claude-<family>-<major>-<minor>[-<date>]" -> "claude-<family>-<major>.<minor>". */
+export function toKiroModelId(model: string): string {
+  const trimmed = model.trim().toLowerCase();
+  const match = /^(claude-[a-z]+)-(\d{1,2})[-.](\d{1,2})(?:-\d{8})?$/.exec(trimmed);
+  if (match) return `${match[1]}-${match[2]}.${match[3]}`;
+  // Already dotted, or a single-number version, with an optional date suffix.
+  return trimmed.replace(/-\d{8}$/, "");
 }
 
 /**

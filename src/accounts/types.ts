@@ -36,7 +36,6 @@ export interface KiroStatusInfo {
   usageLimit: number;
   remaining: number;
   usagePercentage: number;
-  isPremium: boolean;
   nextResetAt: string | null;
   lastCheckedAt: string;
 }

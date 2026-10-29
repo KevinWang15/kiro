@@ -6,11 +6,7 @@ import KiroApiProviderHandler, {
 import { CacheSimulator } from "../kiro/cache-simulation.ts";
 import { SqliteCacheStore } from "../kiro/sqlite-cache.ts";
 import { getKiroRuntimeBaseUrl } from "../kiro/constants.ts";
-import {
-  isKiroPremiumFromStatusInfo,
-  shouldPreferPremiumKiroAccount,
-  supportsKiroExperimentalModel,
-} from "../kiro/utils.ts";
+import { extractSessionId, supportsKiroExperimentalModel } from "../kiro/utils.ts";
 import { hasWebSearchTool, handleWebSearchRequest } from "../kiro/websearch.ts";
 import type { MessagesRequest } from "../kiro/types.ts";
 import type { McpShimConfig } from "../kiro/mcp-shim.ts";
@@ -24,6 +20,16 @@ import type { UsageRepository } from "../usage/repository.ts";
 import type { AccountRecord, KiroCredentials } from "./types.ts";
 import { parseCredentials } from "./types.ts";
 import { normalizeKiroExtraConfigAliases } from "./token-manager.ts";
+
+// Routing log: one JSON line per decision/attempt, grep-able by "[route]".
+function routeLog(event: string, fields: Record<string, unknown>): void {
+  console.log(`[route] ${JSON.stringify({ t: new Date().toISOString(), event, ...fields })}`);
+}
+function shortSession(userId: unknown): string {
+  const id = typeof userId === "string" ? userId : "";
+  const value = (id && extractSessionId(id)) || id;
+  return value ? `…${value.slice(-8)}` : "(none)";
+}
 
 const AUTO_DISABLE_RETRY_COUNT = 5;
 const AUTO_DISABLE_RETRY_DELAY_MS = 2000;
@@ -104,79 +110,21 @@ function shuffleArray<T>(items: T[]): T[] {
   return shuffled;
 }
 
-function orderByPriority(accounts: AccountRecord[]): AccountRecord[] {
-  const priorities = [
-    ...new Set(accounts.map((account) => account.priority)),
-  ].sort((a, b) => b - a);
-  return priorities.flatMap((priority) =>
-    accounts.filter((account) => account.priority === priority),
-  );
-}
-
-function partitionAccounts(accounts: AccountRecord[], requestModel: string) {
-  const preferPremium = shouldPreferPremiumKiroAccount(requestModel);
-  const experimental: AccountRecord[] = [];
-  const preferred: AccountRecord[] = [];
-  const fallback: AccountRecord[] = [];
-  for (const account of accounts) {
-    const credentials = parseCredentials(account);
-    if (
-      supportsKiroExperimentalModel(
-        requestModel,
-        credentials.supportedExperimentalModels,
-      )
-    ) {
-      experimental.push(account);
-    } else if (
-      isKiroPremiumFromStatusInfo(account.statusInfo) === preferPremium
-    ) {
-      preferred.push(account);
-    } else {
-      fallback.push(account);
-    }
-  }
-  return { experimental, preferred, fallback };
-}
-
-function preferredAccounts(
-  accounts: AccountRecord[],
-  requestModel: string,
-): AccountRecord[] {
-  const { experimental, preferred, fallback } = partitionAccounts(
-    accounts,
-    requestModel,
-  );
-  return orderByPriority(
-    experimental.length
-      ? experimental
-      : preferred.length
-        ? preferred
-        : fallback,
-  );
-}
-
+// Lower priority numbers are used first (as the UI says); accounts with the
+// same priority are tried in random order. An account that explicitly lists
+// the requested experimental model goes first within its priority. Nothing
+// here changes which model is requested.
 export function orderAccountsForRequest(
   accounts: AccountRecord[],
   requestModel: string,
 ): AccountRecord[] {
-  const { experimental, preferred, fallback } = partitionAccounts(
-    accounts,
-    requestModel,
-  );
-  return [
-    ...orderByPriority(experimental),
-    ...orderByPriority(preferred),
-    ...orderByPriority(fallback),
-  ];
-}
-
-function normalizeModelKey(model: string): string {
-  return (
-    model
-      .trim()
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, "-")
-      .replace(/^-+|-+$/g, "") || "unknown"
+  const supports = (account: AccountRecord) =>
+    supportsKiroExperimentalModel(
+      requestModel,
+      parseCredentials(account).supportedExperimentalModels,
+    );
+  return shuffleArray(accounts).sort(
+    (a, b) => a.priority - b.priority || Number(supports(b)) - Number(supports(a)),
   );
 }
 
@@ -315,19 +263,25 @@ export class KiroAccountPool {
     }
   }
 
+  /**
+   * Session affinity: reuse the account this session used last time if it's
+   * still a candidate; otherwise take the next account in order and remember
+   * it for the session.
+   */
   private selectAccount(
     available: AccountRecord[],
-    model: string,
     stickyKey: string,
-  ): AccountRecord {
-    const candidates = preferredAccounts(available, model);
-    if (candidates.length === 1) return candidates[0];
+  ): { account: AccountRecord; reason: "only" | "sticky" | "new"; stickyWas: number | null } {
     const sticky = this.stickyGet(stickyKey);
-    const match = candidates.find((account) => account.id === sticky);
-    if (match) return match;
-    const selected = candidates[0];
+    if (available.length === 1) return { account: available[0], reason: "only", stickyWas: sticky };
+    const match = available.find((account) => account.id === sticky);
+    if (match) {
+      this.stickySet(stickyKey, match.id); // refresh the 7-day expiry
+      return { account: match, reason: "sticky", stickyWas: sticky };
+    }
+    const selected = available[0];
     this.stickySet(stickyKey, selected.id);
-    return selected;
+    return { account: selected, reason: "new", stickyWas: sticky };
   }
 
   async call(
@@ -351,13 +305,16 @@ export class KiroAccountPool {
       };
     }
 
-    const ordered = orderAccountsForRequest(
-      shuffleArray(allAccounts),
-      request.model,
-    );
-    const stickyKey = `kiro:${request.metadata?.user_id}:${normalizeModelKey(request.model)}`;
+    const ordered = orderAccountsForRequest(allAccounts, request.model);
+    // Keyed on the session only, so one session stays on one account across
+    // models (e.g. its Opus and Haiku requests).
+    const userId = String(request.metadata?.user_id ?? "");
+    const stickyKey = `kiro:session:${extractSessionId(userId) || userId}`;
     const excluded = new Set<number>();
     let lastResult: PoolResult | null = null;
+    const session = shortSession(request.metadata?.user_id);
+    const requestStarted = Date.now();
+    let attempt = 0;
 
     while (excluded.size < ordered.length) {
       if (options.abortSignal?.aborted)
@@ -370,12 +327,25 @@ export class KiroAccountPool {
         );
       const available = ordered.filter((account) => !excluded.has(account.id));
       if (!available.length) break;
-      const account = this.selectAccount(available, request.model, stickyKey);
+      const choice = this.selectAccount(available, stickyKey);
+      const account = choice.account;
+      attempt += 1;
+      routeLog("select", {
+        session,
+        model: request.model,
+        stream: Boolean(request.stream),
+        attempt,
+        account: account.id,
+        reason: choice.reason,
+        stickyWas: choice.stickyWas,
+        candidates: available.map((a) => a.id),
+      });
       const credentials = normalizeKiroExtraConfigAliases(
         parseCredentials(account),
       );
       const rpm = credentials.rateLimit?.requestsPerMinute;
       if (rpm && !this.rateLimiter.consume(account.id, rpm)) {
+        routeLog("skip", { session, account: account.id, why: "rate limit", rpm });
         excluded.add(account.id);
         this.stickyClear(stickyKey, account.id);
         continue;
@@ -383,6 +353,15 @@ export class KiroAccountPool {
       excluded.add(account.id);
 
       const result = await this.callSingle(account, request, options);
+      routeLog("result", {
+        session,
+        account: account.id,
+        attempt,
+        status: result.statusCode,
+        ok: Boolean(result.success || result.streamed),
+        ms: Date.now() - requestStarted,
+        ...(result.success || result.streamed ? {} : { error: String(result.error || "").slice(0, 200) }),
+      });
       if (options.abortSignal?.aborted || result.statusCode === 499)
         return result;
       if (result.success || result.streamed) return result;
@@ -425,8 +404,10 @@ export class KiroAccountPool {
         });
       }
       this.stickyClear(stickyKey, account.id);
+      routeLog("failover", { session, from: account.id, status: lastResult?.statusCode, remaining: ordered.length - excluded.size });
     }
 
+    routeLog("exhausted", { session, model: request.model, tried: [...excluded], status: lastResult?.statusCode });
     return (
       lastResult || {
         success: false,
@@ -504,10 +485,7 @@ export class KiroAccountPool {
       const credentials = normalizeKiroExtraConfigAliases(
         parseCredentials(account),
       );
-      const runtimeCredentials: ProviderExtraConfig = {
-        ...credentials,
-        isPremium: isKiroPremiumFromStatusInfo(account.statusInfo),
-      };
+      const runtimeCredentials: ProviderExtraConfig = { ...credentials };
       const proxy = this.proxies.get(account.proxyId);
 
       if (hasWebSearchTool(originalRequest)) {
@@ -539,12 +517,6 @@ export class KiroAccountPool {
         return poolResult;
       }
 
-      if (
-        originalRequest.model.includes("*") &&
-        originalRequest.model.includes("claude")
-      ) {
-        originalRequest.model = "claude-haiku-4-5-20251001";
-      }
       const mappedRequest = applyModelMapping(originalRequest, credentials);
       const modifiedRequest = this.handler.transformRequestBody(
         mappedRequest,

@@ -57,7 +57,7 @@ Open **http://127.0.0.1:48763/history** for usage-over-time charts and expandabl
 ## Local data and development
 
 - Default database: `data/kiro.db`
-- Configuration: `HOST`, `PORT`, `KIRO_DB_PATH`, `PREFERENTIAL_KIRO_CACHE`, `KIRO_THINKING_TOKEN_PERCENT_RANGE`
+- Configuration: `HOST`, `PORT`, `KIRO_DB_PATH`, `KIRO_THINKING_TOKEN_PERCENT_RANGE`
 - Development server: `npm run dev`
 - Tests: `npm test`
 

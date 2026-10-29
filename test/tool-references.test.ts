@@ -33,7 +33,7 @@ function functionLines(text: string): any[] {
 test("ToolSearch results render discovered definitions in the <functions> format", () => {
   const request = discoveredToolRequest();
   const original = structuredClone(request);
-  const state = convertRequest(request, { isPremium: true }).conversationState;
+  const state = convertRequest(request).conversationState;
   const context = state.currentMessage.userInputMessage.userInputMessageContext!;
   const text = context.toolResults![0].content[0].text!;
   assert.ok(typeof text === "string");

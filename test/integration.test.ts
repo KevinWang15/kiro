@@ -51,6 +51,11 @@ async function createHarness(t: test.TestContext) {
       req.on("end", () => {
         inferenceBodies.push(JSON.parse(body));
         inferenceHeaders.push(req.headers);
+        if (req.headers.authorization === "Bearer kiro-error") {
+          res.writeHead(403, { "content-type": "application/json" });
+          res.end(JSON.stringify({ message: "Due to suspicious activity, Kiro has paused this account. See https://app.kiro.dev/account/usage" }));
+          return;
+        }
         if (req.headers.authorization === "Bearer bad-key") {
           res.writeHead(402, { "content-type": "application/json" });
           res.end(
@@ -158,10 +163,11 @@ test("messages and metrics preserve model mapping, headers, JSON, SSE, and aggre
     "anthropic-beta": "tools-2024-05-16",
   });
   assert.equal(wildcard.response.status, 200);
+  // No silent rewrite to another model: the requested name goes to Kiro.
   assert.equal(
     inferenceBodies[0].conversationState.currentMessage.userInputMessage
       .modelId,
-    "claude-haiku-4.5",
+    "claude-*",
   );
   assert.equal(inferenceHeaders[0]["anthropic-beta"], "tools-2024-05-16");
 
@@ -218,7 +224,7 @@ test("messages and metrics preserve model mapping, headers, JSON, SSE, and aggre
     `${baseUrl}/api/metrics/performance/model-cost-timeseries?${query}`,
   );
   assert.deepEqual(modelCost.body.models, [
-    "claude-haiku-4-5-20251001",
+    "claude-*",
     "claude-sonnet-4.5",
   ]);
 
@@ -255,4 +261,49 @@ test("messages and metrics preserve model mapping, headers, JSON, SSE, and aggre
   assert.equal(admin.status, 200);
   assert.match(await admin.text(), /Kiro account pool/);
   assert.equal(inferenceBodies.length, 3);
+});
+
+test("requested models reach Kiro unchanged, including Opus and Fable", async (t) => {
+  const { baseUrl, inferenceBodies } = await createHarness(t);
+  await importAccount(baseUrl, "good-key");
+  for (const model of ["claude-opus-4-6", "claude-opus-5-5", "claude-fable-5-1", "claude-sonnet-5-5"]) {
+    const result = await sendMessage(baseUrl, model);
+    assert.equal(result.response.status, 200, model);
+    assert.equal(result.body.model, model, "the response reports the model that was requested and served");
+  }
+  const sent = inferenceBodies.map((b) => b.conversationState.currentMessage.userInputMessage.modelId);
+  assert.deepEqual(sent, ["claude-opus-4.6", "claude-opus-5.5", "claude-fable-5.1", "claude-sonnet-5.5"]);
+});
+
+test("Kiro errors are passed through unchanged, not cloaked", async (t) => {
+  const { baseUrl } = await createHarness(t);
+  await importAccount(baseUrl, "kiro-error");
+  const result = await sendMessage(baseUrl, "claude-sonnet-4-5");
+  assert.equal(result.response.status, 403);
+  assert.match(JSON.stringify(result.body), /Due to suspicious activity, Kiro has paused this account/);
+  assert.doesNotMatch(JSON.stringify(result.body), /temporary issues/);
+});
+
+test("a session sticks to one account across models; failures fail over", async (t) => {
+  const { baseUrl, inferenceHeaders } = await createHarness(t);
+  await importAccount(baseUrl, "good-key");
+  await importAccount(baseUrl, "good-key-2");
+  const send = (model: string, user: string) =>
+    jsonRequest(`${baseUrl}/v1/messages`, {
+      method: "POST",
+      body: JSON.stringify({ model, metadata: { user_id: user }, messages: [{ role: "user", content: "hi" }] }),
+    });
+  for (const model of ["claude-opus-4-6", "claude-haiku-4-5", "claude-sonnet-4-5", "claude-opus-4-6"])
+    assert.equal((await send(model, "user_x_account__session_11111111-1111-4111-8111-111111111111")).response.status, 200);
+  const used = new Set(inferenceHeaders.map((h) => h.authorization));
+  assert.equal(used.size, 1, "one session, one account, regardless of model");
+});
+
+test("when every account fails, the client gets the last real Kiro error", async (t) => {
+  const { baseUrl } = await createHarness(t);
+  await importAccount(baseUrl, "kiro-error");
+  await importAccount(baseUrl, "bad-key");
+  const result = await sendMessage(baseUrl, "claude-sonnet-4-5");
+  assert.ok([402, 403].includes(result.response.status), String(result.response.status));
+  assert.match(JSON.stringify(result.body), /Quota exhausted|suspicious activity/);
 });
