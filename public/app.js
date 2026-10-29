@@ -931,9 +931,9 @@ function renderHistoryDetails() {
       const usage = entry.usage || {};
       const cost = entry.cost || {};
       const timing = entry.timing || {};
-      const mainRow = `<tr><td><button class="history-expand" data-history-index="${entry.id}" aria-label="${expanded ? "Collapse" : "Expand"} request details"><i data-lucide="chevron-${expanded ? "down" : "right"}"></i></button></td><td>${date(entry.createdAt)}</td><td>${modelBadge(entry.model)}</td><td>#${entry.accountId}</td><td class="history-amount">${historyUsd(entry.costUsd)}</td><td>${historyUsd(entry.cumulativeCostUsd)}</td><td>${number(entry.kiroCredits, 2)}</td></tr>`;
+      const mainRow = `<tr><td><button class="history-expand" data-history-index="${entry.id}" aria-label="${expanded ? "Collapse" : "Expand"} request details"><i data-lucide="chevron-${expanded ? "down" : "right"}"></i></button></td><td>${date(entry.createdAt)}</td><td>${modelBadge(entry.model)}</td><td class="history-amount">${historyUsd(entry.costUsd)}</td><td>${historyUsd(entry.cumulativeCostUsd)}</td><td>${number(entry.kiroCredits, 2)}</td></tr>`;
       if (!expanded) return mainRow;
-      const details = `<tr class="detail-row"><td colspan="7"><div class="detail-grid">
+      const details = `<tr class="detail-row"><td colspan="6"><div class="detail-grid">
       ${detailCard("Token usage", [
         ["Input", Number(usage.input_tokens || 0).toLocaleString()],
         ["Output", Number(usage.output_tokens || 0).toLocaleString()],
