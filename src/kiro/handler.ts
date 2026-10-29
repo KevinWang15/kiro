@@ -22,11 +22,7 @@ import {
   InMemoryCacheStore,
   SystemClock,
 } from "./cache-simulation.ts";
-import {
-  BufferedStreamContext,
-  sseEventToString,
-  StreamContext,
-} from "./stream.ts";
+import { sseEventToString, StreamContext } from "./stream.ts";
 import { getConversationId, splitThinking } from "./utils.ts";
 import { calculateClaudeCost } from "../usage/pricing.ts";
 import { getKiroRuntimeHost } from "./constants.ts";
@@ -653,51 +649,6 @@ export default class KiroApiProviderHandler {
     };
   }
 
-  private buildBufferedStreamBody(
-    events: KiroEvent[],
-    requestBody: MessagesRequest,
-    modifiedRequestBody: KiroRequest,
-    analysis: KiroAnalysisResult,
-  ): string {
-    const thinkingEnabled = isThinkingEnabled(requestBody.thinking);
-    const ctx = new BufferedStreamContext(
-      requestBody.model,
-      0,
-      thinkingEnabled,
-    );
-
-    for (const event of events) {
-      ctx.processAndBuffer(
-        event,
-        modifiedRequestBody.conversationState.currentMessage.userInputMessage
-          .modelId,
-      );
-    }
-
-    const sseEvents = ctx.finishAndGetAllEvents();
-
-    for (const sseEvent of sseEvents) {
-      if (sseEvent.event === "message_start") {
-        const message = sseEvent.data.message as
-          | Record<string, unknown>
-          | undefined;
-        if (message) {
-          message.usage = {
-            input_tokens: analysis.inputTokens,
-            output_tokens: 0,
-            cache_creation_input_tokens: analysis.cacheCreationInputTokens,
-            cache_read_input_tokens: analysis.cacheReadInputTokens,
-          };
-        }
-      }
-      if (sseEvent.event === "message_delta") {
-        sseEvent.data.usage = { output_tokens: analysis.outputTokens };
-      }
-    }
-
-    return sseEvents.map(sseEventToString).join("");
-  }
-
   async streamResponse(
     responseStream: AsyncIterable<Buffer | Uint8Array>,
     requestBody: MessagesRequest,
@@ -839,23 +790,8 @@ export default class KiroApiProviderHandler {
       modifiedRequestBody,
     );
 
-    // ── Streaming path ──────────────────────────────────────────────────────
-    if (requestBody.stream) {
-      return {
-        body: this.buildBufferedStreamBody(
-          events,
-          requestBody,
-          modifiedRequestBody,
-          analysis,
-        ),
-        headers: {
-          "content-type": "text/event-stream; charset=utf-8",
-          ...analysis.costHeaders,
-        },
-      };
-    }
-
-    // ── Non-streaming path ──────────────────────────────────────────────────
+    // Streaming requests never come through here: the pool streams them live
+    // via streamResponse(). A fully read reply is always returned as JSON.
     const response = buildClaudeMessage(
       analysis.content,
       analysis.toolUses,

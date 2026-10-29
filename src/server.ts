@@ -444,6 +444,8 @@ export function createServerContext(database: AppDatabase): ServerContext {
         res.end();
         return;
       }
+      // Only web search answers a streaming request with a prebuilt SSE string;
+      // everything else streamed live above (result.streamed).
       if (body.stream && typeof result.response === "string")
         res.type("text/event-stream");
       else if (result.responseHeaders?.["content-type"])

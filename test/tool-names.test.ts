@@ -108,7 +108,7 @@ test("same-description aliased tools retain their distinct client names within d
   assert.ok(!/[\uD800-\uDBFF]$/.test(spec.description));
 });
 
-for (const mode of ["json", "buffered SSE", "live SSE"] as const) {
+for (const mode of ["json", "live SSE"] as const) {
   test(`tool names and JSON arguments round-trip through ${mode}`, async () => {
     const request = requestFor(longName);
     request.stream = mode !== "json";
@@ -125,14 +125,10 @@ for (const mode of ["json", "buffered SSE", "live SSE"] as const) {
       assert.equal(body.stop_reason, "tool_use");
     } else {
       let text = "";
-      if (mode === "buffered SSE") {
-        text = (await handler.transformResponseBody(200, bytes, request, modified)).body as string;
-      } else {
-        async function* chunks() {
-          for (let i = 0; i < bytes.length; i += 7) yield bytes.subarray(i, i + 7);
-        }
-        await handler.streamResponse(chunks(), request, modified, { onChunk: (chunk) => { text += chunk; } });
+      async function* chunks() {
+        for (let i = 0; i < bytes.length; i += 7) yield bytes.subarray(i, i + 7);
       }
+      await handler.streamResponse(chunks(), request, modified, { onChunk: (chunk) => { text += chunk; } });
       const events = text.split("\n").filter((line) => line.startsWith("data: ")).map((line) => JSON.parse(line.slice(6)));
       const tool = events.find((event) => event.content_block?.type === "tool_use").content_block;
       assert.equal(tool.name, longName);
