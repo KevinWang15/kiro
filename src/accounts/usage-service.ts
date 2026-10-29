@@ -42,6 +42,16 @@ interface UsageLimitsResponse {
   usageBreakdownList?: UsageBreakdown[];
 }
 
+// Kiro reports nextDateReset in seconds on some endpoints and milliseconds on
+// others (get-usage.js accepts both). Anything above 1e12 is already ms.
+export function resetDateFrom(value: unknown): string | null {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n <= 0) return null;
+  const ms = n > 1e12 ? n : n * 1000;
+  const date = new Date(ms);
+  return Number.isFinite(date.getTime()) ? date.toISOString() : null;
+}
+
 export function aggregateUsage(response: UsageLimitsResponse): KiroStatusInfo {
   const subscriptionTitle =
     response.subscriptionInfo?.subscriptionTitle || "Unknown";
@@ -73,11 +83,9 @@ export function aggregateUsage(response: UsageLimitsResponse): KiroStatusInfo {
   const remaining = Math.max(usageLimit - currentUsage, 0);
   const usagePercentage =
     usageLimit > 0 ? Math.min((currentUsage / usageLimit) * 100, 100) : 0;
-  const nextResetAt = breakdown.nextDateReset
-    ? new Date(breakdown.nextDateReset * 1000).toISOString()
-    : response.nextDateReset
-      ? new Date(response.nextDateReset * 1000).toISOString()
-      : null;
+  const nextResetAt = resetDateFrom(
+    breakdown.nextDateReset ?? response.nextDateReset,
+  );
   return {
     subscriptionTitle,
     currentUsage: Math.round(currentUsage * 100) / 100,

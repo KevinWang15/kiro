@@ -371,7 +371,13 @@ main {
 }
 .button:disabled {
   opacity: 0.45;
-  cursor: wait;
+  cursor: not-allowed;
+}
+/* A busy button is disabled too, but stays readable so its spinner and
+   "Refreshing…" label are clear. */
+.button:disabled[aria-busy="true"] {
+  opacity: 0.85;
+  cursor: progress;
 }
 .icon-button {
   display: inline-grid;
@@ -389,8 +395,24 @@ main {
   background: var(--panel-raised);
   border-color: var(--border);
 }
-.is-loading svg {
-  animation: spin 0.8s linear infinite;
+/* Spinner that replaces a button's icon while it's busy (setBusy in app.js). */
+.button .button-spinner,
+.icon-button .button-spinner {
+  width: 14px;
+  height: 14px;
+  border-width: 2px;
+  border-color: currentColor;
+  border-right-color: transparent;
+  opacity: 0.9;
+}
+.button.primary .button-spinner {
+  border-color: #fff;
+  border-right-color: transparent;
+}
+.button[aria-busy="true"],
+.icon-button[aria-busy="true"] {
+  cursor: progress;
+  opacity: 0.85;
 }
 @keyframes spin {
   to {
@@ -507,7 +529,6 @@ tbody tr.loading-row:hover {
 @media (prefers-reduced-motion: reduce) {
   .spinner,
   .chart.loading::after,
-  .is-loading svg,
   .progress-bar::before,
   .summary-card.skeleton strong,
   .summary-card.skeleton small {
@@ -710,6 +731,94 @@ tbody tr:last-child td {
 }
 tbody tr:hover {
   background: var(--panel-raised);
+}
+/* Fixed layout: widths come from <colgroup>, never from cell content, so a
+   button changing label ("Test" -> "Testing…") can't re-flow the table.
+   Compact columns are fixed in px; text columns share the rest by percentage.
+   Below the min width the table scrolls horizontally inside .table-wrap. */
+.fixed-table {
+  table-layout: fixed;
+  min-width: 1240px;
+}
+.fixed-table th {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.fixed-table td {
+  overflow: hidden;
+  white-space: normal;
+}
+/* One line, truncated with an ellipsis; the full value is in the title. */
+.fixed-table .truncate {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* Up to two lines, then an ellipsis. */
+.fixed-table .clamp-2 {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+}
+.fixed-table .source,
+.fixed-table .date,
+.fixed-table .credit-column {
+  min-width: 0;
+}
+.fixed-table .token {
+  max-width: none;
+}
+.fixed-table .date-line {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.fixed-table .date-line.time {
+  color: var(--faint);
+  font-size: 12px;
+}
+.fixed-table .badge {
+  max-width: 100%;
+  white-space: nowrap;
+}
+.fixed-table .credit-label,
+.fixed-table .usage small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.fixed-table .row-actions {
+  flex-wrap: nowrap;
+}
+.status-cell {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  white-space: nowrap;
+}
+.status-warning {
+  color: var(--amber);
+  cursor: help;
+  flex: none;
+}
+.proxies-table {
+  min-width: 900px;
+}
+.proxies-table .mono {
+  font-size: 12px;
+}
+/* "Testing…" is wider than "Test": reserve it so the row never shifts. */
+.proxies-table [data-proxy-action="test"],
+.accounts-table [data-action="test"] {
+  min-width: 90px;
+  justify-content: flex-start;
 }
 .provider {
   color: var(--accent-text);

@@ -142,3 +142,11 @@ test("usage aggregation includes active trial and bonuses", () => {
   assert.equal(shouldUseCborApi({ authMethod: "api_key" }), false);
   assert.equal(canFetchKiroUsage("key", { authMethod: "api_key" }), true);
 });
+
+test("reset dates are read as seconds or milliseconds", async () => {
+  const { resetDateFrom } = await import("../src/accounts/usage-service.ts");
+  assert.equal(resetDateFrom(1800000000), "2027-01-15T08:00:00.000Z");
+  assert.equal(resetDateFrom(1793491200000), "2026-11-01T00:00:00.000Z");
+  assert.equal(resetDateFrom(undefined), null);
+  assert.equal(resetDateFrom(0), null);
+});

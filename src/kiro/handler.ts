@@ -840,7 +840,15 @@ export default class KiroApiProviderHandler {
         responseString = Buffer.from(responseBody, "utf-8").toString();
       }
 
-      const parsedBody = JSON.parse(responseString);
+      // Kiro sometimes answers errors with plain text or HTML. Keep its words
+      // instead of surfacing a JSON parse error as the failure reason.
+      let parsedBody: unknown;
+      try {
+        parsedBody = JSON.parse(responseString);
+      } catch {
+        const text = responseString.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim().slice(0, 300);
+        parsedBody = { message: text ? `Kiro returned HTTP ${statusCode}: ${text}` : `Kiro returned HTTP ${statusCode} with no details` };
+      }
       if (
         getKiroUnrecoverableErrorReason(
           statusCode,

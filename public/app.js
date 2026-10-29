@@ -45,6 +45,14 @@ const date = (value) =>
         second: "2-digit",
       })
     : "—";
+// Date over time, for narrow table columns.
+const dateTimeStack = (value) => {
+  if (!value) return "—";
+  const d = new Date(value);
+  const day = d.toLocaleDateString(undefined, { year: "numeric", month: "2-digit", day: "2-digit" });
+  const time = d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+  return `<span class="date-line">${escapeHtml(day)}</span><span class="date-line time">${escapeHtml(time)}</span>`;
+};
 const notyf = new Notyf({
   duration: 3500,
   dismissible: true,
@@ -54,8 +62,49 @@ const notyf = new Notyf({
     { type: "error", background: "#9b3a44", icon: false },
   ],
 });
+// A modal <dialog> lives in the browser's top layer, above any z-index, so
+// toasts on <body> would be hidden behind it. Keep Notyf's container (and its
+// screen-reader announcer) inside whichever dialog is open, else on <body>.
+function placeToasts() {
+  const open = [...document.querySelectorAll("dialog[open]")].at(-1);
+  const host = open || document.body;
+  for (const node of document.querySelectorAll(".notyf, .notyf-announcer"))
+    if (node.parentElement !== host) host.appendChild(node);
+}
 function toast(message, error = false) {
+  placeToasts();
   notyf.open({ type: error ? "error" : "success", message });
+}
+// Busy state shared by every button: the button's own icon is replaced by a
+// spinner (so a play triangle or refresh arrow never spins), the label can
+// change, and the original content comes back when the work finishes.
+function setBusy(button, busy, label) {
+  if (!button) return;
+  if (busy) {
+    if (button.dataset.busy) return;
+    button.dataset.busy = "true";
+    button.dataset.idleHtml = button.innerHTML;
+    button.disabled = true;
+    button.setAttribute("aria-busy", "true");
+    const text = label ?? button.querySelector("span")?.textContent ?? "";
+    const iconOnly = button.classList.contains("icon-only") || !button.querySelector("span");
+    button.innerHTML = `<span class="spinner button-spinner" aria-hidden="true"></span>${iconOnly ? "" : `<span>${escapeHtml(text)}</span>`}`;
+  } else {
+    if (!button.dataset.busy) return;
+    button.innerHTML = button.dataset.idleHtml;
+    delete button.dataset.busy;
+    delete button.dataset.idleHtml;
+    button.disabled = false;
+    button.removeAttribute("aria-busy");
+  }
+}
+async function withBusy(button, label, work) {
+  setBusy(button, true, label);
+  try {
+    return await work();
+  } finally {
+    setBusy(button, false);
+  }
 }
 function refreshIcons() {
   lucide.createIcons({ attrs: { "stroke-width": 1.7 } });
@@ -66,9 +115,21 @@ async function api(path, options = {}) {
     ...options,
   });
   const data = await response.json().catch(() => ({}));
-  if (!response.ok)
-    throw new Error(data.error || data.message || `HTTP ${response.status}`);
+  if (!response.ok) throw new Error(errorMessage(data, response.status));
   return data;
+}
+// Upstream errors sometimes arrive as a JSON string inside "error"
+// ('{"message":"..."}'); show the message itself, not the JSON.
+function errorMessage(data, status) {
+  let message = data?.error ?? data?.message ?? data?.response?.message;
+  if (typeof message === "string" && message.trim().startsWith("{")) {
+    try {
+      const inner = JSON.parse(message);
+      message = inner.message || inner.error?.message || inner.error || message;
+    } catch {}
+  }
+  if (message && typeof message === "object") message = message.message || JSON.stringify(message);
+  return message || `HTTP ${status}`;
 }
 async function copyText(text) {
   try {
@@ -87,6 +148,7 @@ async function copyText(text) {
 }
 function openDialog(id) {
   $(id).showModal();
+  placeToasts();
 }
 function closeDialog(id) {
   $(id).close();
@@ -170,9 +232,7 @@ try {
 
 async function loadAccounts() {
   const button = $("#reload-accounts");
-  button.disabled = true;
-  button.classList.add("is-loading");
-  button.setAttribute("aria-busy", "true");
+  setBusy(button, true);
   try {
     const data = await api("/api/accounts");
     state.accounts = data.accounts;
@@ -181,9 +241,7 @@ async function loadAccounts() {
   } catch (error) {
     toast(error.message, true);
   } finally {
-    button.disabled = false;
-    button.classList.remove("is-loading");
-    button.removeAttribute("aria-busy");
+    setBusy(button, false);
   }
 }
 function renderAccounts() {
@@ -235,7 +293,7 @@ function renderAccounts() {
       const level = percent < 10 ? "low" : percent < 30 ? "medium" : "";
       const normal = account.enabled && !account.autoDisabled;
       const proxy = state.proxies.find((p) => p.id === account.proxyId);
-      return `<tr><td>${account.id}</td><td class="provider">kiro</td><td class="token" title="${escapeHtml(account.maskedToken)}">${escapeHtml(account.maskedToken) || "—"}</td><td class="priority">${account.priority}</td><td><span class="badge ${normal ? "normal" : "disabled"}">${normal ? "Normal" : "Disabled"}</span>${account.disabledReason ? `<small title="${escapeHtml(account.disabledReason)}"> ⚠</small>` : ""}</td><td class="source">${escapeHtml(account.source)}</td><td class="date">${date(account.createdAt)}</td><td><div class="credit-label">Credits (${number(remaining, 2)}/${number(limit, 0)})</div><div class="credit-track"><div class="credit-fill ${level}" style="width:${percent}%"></div></div><div class="usage">Kiro usage<small>${number(account.usage?.totalKiroCredits)} credits / $${number(account.usage?.totalCostUsd)}</small></div></td><td class="proxy-name">${escapeHtml(proxy?.name || "Direct")}</td><td><div class="row-actions"><button class="button small" data-action="test" data-id="${account.id}" title="Test account"><i data-lucide="play"></i><span>Test</span></button><button class="button small" data-action="edit" data-id="${account.id}" title="Edit account"><i data-lucide="pencil"></i><span>Edit</span></button><button class="button small icon-only" data-action="refresh" data-id="${account.id}" title="Refresh OAuth token" aria-label="Refresh OAuth token"><i data-lucide="refresh-cw"></i></button><button class="button small danger icon-only" data-action="delete" data-id="${account.id}" title="Delete account" aria-label="Delete account"><i data-lucide="trash-2"></i></button></div></td></tr>`;
+      return `<tr><td>${account.id}</td><td class="provider">kiro</td><td class="token"><span class="truncate" title="${escapeHtml(account.maskedToken)}">${escapeHtml(account.maskedToken) || "—"}</span></td><td class="priority">${account.priority}</td><td><span class="status-cell"><span class="badge ${normal ? "normal" : "disabled"}">${normal ? "Normal" : "Disabled"}</span>${account.disabledReason ? `<span class="status-warning" title="${escapeHtml(account.disabledReason)}" aria-label="${escapeHtml(account.disabledReason)}">⚠</span>` : ""}</span></td><td class="source"><span class="clamp-2" title="${escapeHtml(account.source)}">${escapeHtml(account.source)}</span></td><td class="date" title="${escapeHtml(date(account.createdAt))}">${dateTimeStack(account.createdAt)}</td><td><div class="credit-label" title="Credits ${number(remaining, 2)} of ${number(limit, 0)}">Credits (${number(remaining, 2)}/${number(limit, 0)})</div><div class="credit-track"><div class="credit-fill ${level}" style="width:${percent}%"></div></div><div class="usage">Kiro usage<small title="${number(account.usage?.totalKiroCredits)} credits / $${number(account.usage?.totalCostUsd)}">${number(account.usage?.totalKiroCredits)} credits / $${number(account.usage?.totalCostUsd)}</small></div></td><td class="proxy-name"><span class="truncate" title="${escapeHtml(proxy?.name || "Direct")}">${escapeHtml(proxy?.name || "Direct")}</span></td><td><div class="row-actions"><button class="button small" data-action="test" data-id="${account.id}" title="Test account"><i data-lucide="play"></i><span>Test</span></button><button class="button small" data-action="edit" data-id="${account.id}" title="Edit account"><i data-lucide="pencil"></i><span>Edit</span></button><button class="button small icon-only" data-action="refresh" data-id="${account.id}" title="Refresh OAuth token" aria-label="Refresh OAuth token"><i data-lucide="refresh-cw"></i></button><button class="button small danger icon-only" data-action="delete" data-id="${account.id}" title="Delete account" aria-label="Delete account"><i data-lucide="trash-2"></i></button></div></td></tr>`;
     })
     .join("");
 }
@@ -278,7 +336,7 @@ async function submitImport() {
   const text = $("#import-text").value;
   if (!text.trim()) return toast("Paste credentials first", true);
   const button = $("#submit-import");
-  button.disabled = true;
+  setBusy(button, true, "Importing…");
   $("#import-progress").classList.remove("hidden");
   $("#import-result").classList.add("hidden");
   try {
@@ -295,7 +353,7 @@ async function submitImport() {
   } catch (error) {
     $("#parse-error").textContent = error.message;
   } finally {
-    button.disabled = false;
+    setBusy(button, false);
     $("#import-progress").classList.add("hidden");
   }
 }
@@ -313,7 +371,7 @@ function relativeTime(value) {
   const ms = new Date(value).getTime() - Date.now();
   const abs = Math.abs(ms);
   const units = [["day", 86400000], ["hour", 3600000], ["minute", 60000]];
-  const fmt = new Intl.RelativeTimeFormat(undefined, { numeric: "auto" });
+  const fmt = new Intl.RelativeTimeFormat(document.documentElement.lang || "en", { numeric: "auto" });
   for (const [unit, size] of units) if (abs >= size) return fmt.format(Math.round(ms / size), unit);
   return ms >= 0 ? "in under a minute" : "just now";
 }
@@ -422,7 +480,7 @@ async function saveAccount() {
     }
     payload.convert = $("#edit-convert").checked;
   }
-  button.disabled = true;
+  setBusy(button, true, "Saving…");
   try {
     await api(`/api/accounts/${id}`, { method: "PATCH", body: JSON.stringify(payload) });
     closeDialog("#account-dialog");
@@ -431,12 +489,12 @@ async function saveAccount() {
   } catch (error) {
     $("#edit-error").textContent = error.message;
   } finally {
-    button.disabled = false;
+    setBusy(button, false);
   }
 }
-async function runEditAction(button, work, done) {
-  button.disabled = true;
-  button.classList.add("is-loading");
+async function runEditAction(button, label, work, done) {
+  setBusy(button, true, label);
+  $("#edit-error").textContent = "";
   try {
     await work();
     toast(done);
@@ -448,9 +506,9 @@ async function runEditAction(button, work, done) {
     loadAccounts();
   } catch (error) {
     $("#edit-error").textContent = error.message;
+    toast(error.message, true);
   } finally {
-    button.disabled = false;
-    button.classList.remove("is-loading");
+    setBusy(button, false);
   }
 }
 
@@ -556,7 +614,7 @@ async function naStartLogin() {
   const popup = method === "builder-id" ? null : window.open("about:blank", "_blank");
   newAccount.popup = popup;
   const primary = $("#na-primary");
-  primary.disabled = true;
+  setBusy(primary, true, "Starting…");
   try {
     const login = await api(`/api/logins/${method}`, { method: "POST", body: JSON.stringify(body) });
     if (login.status === "failed") throw new Error(login.error || "Sign-in could not start");
@@ -579,7 +637,7 @@ async function naStartLogin() {
     if (method === "identity-center") $("#na-configure-error").textContent = error.message;
     else toast(error.message, true);
   } finally {
-    primary.disabled = false;
+    setBusy(primary, false);
   }
 }
 function naStopPolling(cancel = false) {
@@ -664,10 +722,7 @@ async function naSubmitManual() {
     };
   }
   const button = $("#na-primary");
-  button.disabled = true;
-  button.classList.add("is-loading");
-  button.innerHTML = '<i data-lucide="loader-circle"></i><span>Checking…</span>';
-  refreshIcons();
+  setBusy(button, true, "Checking…");
   try {
     const created = await api("/api/accounts/create", {
       method: "POST",
@@ -677,7 +732,7 @@ async function naSubmitManual() {
   } catch (error) {
     naManualError(error.message);
   } finally {
-    button.classList.remove("is-loading");
+    setBusy(button, false);
     if (newAccount.step === "manual") naShow("manual");
   }
 }
@@ -685,7 +740,8 @@ function naManualError(message, focusId) {
   $("#na-manual-error").textContent = message;
   if (focusId) $(`#${focusId}`).focus();
 }
-async function accountAction(action, id) {
+const ROW_BUSY_LABELS = { test: "Testing…", refresh: "", delete: "" };
+async function accountAction(action, id, button) {
   try {
     if (action === "edit") return editAccount(id);
     if (action === "delete" && $("#account-dialog").open) closeDialog("#account-dialog");
@@ -696,15 +752,14 @@ async function accountAction(action, id) {
         )
       )
         return;
-      await api(`/api/accounts/${id}`, { method: "DELETE" });
+      await withBusy(button, "", () => api(`/api/accounts/${id}`, { method: "DELETE" }));
       toast("Account deleted");
     } else if (action === "refresh") {
-      await api(`/api/accounts/${id}/refresh`, { method: "POST" });
+      await withBusy(button, ROW_BUSY_LABELS.refresh, () => api(`/api/accounts/${id}/refresh`, { method: "POST" }));
       toast("Access token refreshed");
     } else if (action === "test") {
-      toast(`Testing account ${id}…`);
-      await api(`/api/accounts/${id}/test`, { method: "POST" });
-      toast(`Account ${id} responded successfully`);
+      await withBusy(button, ROW_BUSY_LABELS.test, () => api(`/api/accounts/${id}/test`, { method: "POST" }));
+      toast(`Account ${id} answered a test request`);
     }
     await loadAccounts();
   } catch (error) {
@@ -714,12 +769,7 @@ async function accountAction(action, id) {
 }
 async function refreshAllUsage() {
   const button = $("#refresh-usage");
-  const content = button.innerHTML;
-  button.disabled = true;
-  button.innerHTML =
-    '<i data-lucide="loader-circle"></i><span>Refreshing…</span>';
-  button.classList.add("is-loading");
-  refreshIcons();
+  setBusy(button, true, "Refreshing…");
   let updated = 0;
   for (const account of state.accounts) {
     try {
@@ -730,10 +780,7 @@ async function refreshAllUsage() {
     } catch {}
   }
   await loadAccounts();
-  button.disabled = false;
-  button.classList.remove("is-loading");
-  button.innerHTML = content;
-  refreshIcons();
+  setBusy(button, false);
   toast(`Updated credits for ${updated} account${updated === 1 ? "" : "s"}`);
 }
 
@@ -754,7 +801,7 @@ function renderProxies() {
   $("#proxies-body").innerHTML = state.proxies
     .map(
       (p) =>
-        `<tr><td>${p.id}</td><td>${escapeHtml(p.name)}</td><td>${escapeHtml(p.type)}</td><td>${escapeHtml(p.url)}</td><td>${p.basicAuthUsername ? "Basic auth" : "None"}</td><td><div class="row-actions"><button class="button small" data-proxy-action="test" data-id="${p.id}" title="Test proxy"><i data-lucide="play"></i><span>Test</span></button><button class="button small" data-proxy-action="edit" data-id="${p.id}" title="Edit proxy"><i data-lucide="pencil"></i><span>Edit</span></button><button class="button small danger icon-only" data-proxy-action="delete" data-id="${p.id}" title="Delete proxy" aria-label="Delete proxy"><i data-lucide="trash-2"></i></button></div></td></tr>`,
+        `<tr><td>${p.id}</td><td><span class="truncate" title="${escapeHtml(p.name)}">${escapeHtml(p.name)}</span></td><td><span class="truncate">${escapeHtml(p.type)}</span></td><td><span class="truncate mono" title="${escapeHtml(p.url)}">${escapeHtml(p.url)}</span></td><td>${p.basicAuthUsername ? "Basic auth" : "None"}</td><td><div class="row-actions"><button class="button small" data-proxy-action="test" data-id="${p.id}" title="Test proxy"><i data-lucide="play"></i><span>Test</span></button><button class="button small" data-proxy-action="edit" data-id="${p.id}" title="Edit proxy"><i data-lucide="pencil"></i><span>Edit</span></button><button class="button small danger icon-only" data-proxy-action="delete" data-id="${p.id}" title="Delete proxy" aria-label="Delete proxy"><i data-lucide="trash-2"></i></button></div></td></tr>`,
     )
     .join("");
 }
@@ -783,6 +830,8 @@ function editProxy(proxy) {
 }
 async function saveProxy() {
   const id = $("#proxy-id").value;
+  const button = $("#save-proxy");
+  setBusy(button, true, "Saving…");
   try {
     await api(id ? `/api/proxies/${id}` : "/api/proxies", {
       method: id ? "PATCH" : "POST",
@@ -799,18 +848,19 @@ async function saveProxy() {
     toast("Proxy saved");
   } catch (error) {
     $("#proxy-error").textContent = error.message;
+  } finally {
+    setBusy(button, false);
   }
 }
-async function proxyAction(action, id) {
+async function proxyAction(action, id, button) {
   const proxy = state.proxies.find((p) => p.id === id);
   try {
     if (action === "edit") return editProxy(proxy);
     if (action === "delete") {
       if (!confirm(`Delete proxy ${proxy.name}?`)) return;
-      await api(`/api/proxies/${id}`, { method: "DELETE" });
+      await withBusy(button, "", () => api(`/api/proxies/${id}`, { method: "DELETE" }));
     } else {
-      toast("Testing proxy connectivity…");
-      const result = await api(`/api/proxies/${id}/test`, { method: "POST" });
+      const result = await withBusy(button, "Testing…", () => api(`/api/proxies/${id}/test`, { method: "POST" }));
       toast(result.message, result.success === false);
     }
     await loadProxies();
@@ -1422,8 +1472,7 @@ let historyRequestId = 0;
 async function loadHistory() {
   const requestId = ++historyRequestId;
   const button = $("#refresh-history");
-  button.disabled = true;
-  button.classList.add("is-loading");
+  setBusy(button, true, "Refreshing…");
   try {
     state.historyRange = resolveRollingRange(state.historyRange, new Date());
     const query = rangeQuery(state.historyRange);
@@ -1441,10 +1490,7 @@ async function loadHistory() {
   } catch (error) {
     toast(error.message, true);
   } finally {
-    if (requestId === historyRequestId) {
-      button.disabled = false;
-      button.classList.remove("is-loading");
-    }
+    if (requestId === historyRequestId) setBusy(button, false);
   }
 }
 
@@ -1461,8 +1507,7 @@ let metricsRequestId = 0;
 async function loadMetrics() {
   const requestId = ++metricsRequestId;
   const refreshButton = $("#refresh-metrics");
-  refreshButton.disabled = true;
-  refreshButton.classList.add("is-loading");
+  setBusy(refreshButton, true, "Refreshing…");
   try {
     state.metricsRange = resolveRollingRange(state.metricsRange, new Date());
     const query = rangeQuery(state.metricsRange);
@@ -1636,10 +1681,7 @@ async function loadMetrics() {
   } catch (error) {
     toast(error.message, true);
   } finally {
-    if (requestId === metricsRequestId) {
-      refreshButton.disabled = false;
-      refreshButton.classList.remove("is-loading");
-    }
+    if (requestId === metricsRequestId) setBusy(refreshButton, false);
   }
 }
 
@@ -1678,8 +1720,8 @@ $("#na-configure").addEventListener("keydown", (event) => {
   if (event.key === "Enter" && event.target.matches("input")) { event.preventDefault(); naStartLogin(); }
 });
 $("#edit-delete").onclick = () => accountAction("delete", Number($("#edit-account-id").value));
-$("#edit-refresh-token").onclick = () => runEditAction($("#edit-refresh-token"), () => api(`/api/accounts/${$("#edit-account-id").value}/refresh`, { method: "POST" }), "Access token refreshed");
-$("#edit-test").onclick = () => runEditAction($("#edit-test"), () => api(`/api/accounts/${$("#edit-account-id").value}/test`, { method: "POST" }), "The account answered a test request");
+$("#edit-refresh-token").onclick = () => runEditAction($("#edit-refresh-token"), "Refreshing…", () => api(`/api/accounts/${$("#edit-account-id").value}/refresh`, { method: "POST" }), "Access token refreshed");
+$("#edit-test").onclick = () => runEditAction($("#edit-test"), "Testing…", () => api(`/api/accounts/${$("#edit-account-id").value}/test`, { method: "POST" }), "The account answered a test request");
 $("#submit-import").onclick = submitImport;
 $("#import-text").oninput = () => {
   clearTimeout(parseDebounce);
@@ -1715,17 +1757,18 @@ $("#copy-script").onclick = async () => {
 };
 $("#endpoint-script").textContent =
   `export ANTHROPIC_BASE_URL=${location.origin}\nexport ANTHROPIC_API_KEY=sk-ant-api03-dummykey123123123123\n\n# programmatically approve this API Key\n(cat ~/.claude.json 2>/dev/null || echo 'null') | jq --arg key "\${ANTHROPIC_API_KEY: -20}" '(. // {}) | .customApiKeyResponses.approved |= ([.[]?, $key] | unique)' > ~/.claude.json.tmp && mv ~/.claude.json.tmp ~/.claude.json`;
+for (const dialog of $$("dialog")) dialog.addEventListener("close", placeToasts);
 $$("[data-close]").forEach(
   (b) => (b.onclick = () => closeDialog(`#${b.dataset.close}`)),
 );
 $("#accounts-body").onclick = (e) => {
   const button = e.target.closest("[data-action]");
-  if (button) accountAction(button.dataset.action, Number(button.dataset.id));
+  if (button) accountAction(button.dataset.action, Number(button.dataset.id), button);
 };
 $("#proxies-body").onclick = (e) => {
   const button = e.target.closest("[data-proxy-action]");
   if (button)
-    proxyAction(button.dataset.proxyAction, Number(button.dataset.id));
+    proxyAction(button.dataset.proxyAction, Number(button.dataset.id), button);
 };
 refreshIcons();
 createTimeRangePicker($("#metrics-time-range"), {
