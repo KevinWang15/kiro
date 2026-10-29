@@ -2,6 +2,7 @@ import axios from "axios";
 import { createHash } from "node:crypto";
 import KiroApiProviderHandler, {
   getKiroUnrecoverableErrorReason,
+  KiroTruncatedError,
 } from "../kiro/handler.ts";
 import { CacheSimulator } from "../kiro/cache-simulation.ts";
 import { SqliteCacheStore } from "../kiro/sqlite-cache.ts";
@@ -358,9 +359,9 @@ export class KiroAccountPool {
         account: account.id,
         attempt,
         status: result.statusCode,
-        ok: Boolean(result.success || result.streamed),
+        ok: Boolean(result.success),
         ms: Date.now() - requestStarted,
-        ...(result.success || result.streamed ? {} : { error: String(result.error || "").slice(0, 200) }),
+        ...(result.success ? {} : { error: String(result.error || "").slice(0, 200) }),
       });
       if (options.abortSignal?.aborted || result.statusCode === 499)
         return result;
@@ -593,12 +594,27 @@ export class KiroAccountPool {
               error: "Request canceled",
               accountId: account.id,
             };
+          // Headers are already sent, so the status can't change. End the
+          // stream with an SSE error event so the client sees a failure
+          // instead of a reply that just stops.
+          const message = (error as Error).message;
+          await Promise.resolve(
+            options.sink.onChunk(
+              `event: error\ndata: ${JSON.stringify({
+                type: "error",
+                error: {
+                  type: error instanceof KiroTruncatedError ? "overloaded_error" : "api_error",
+                  message,
+                },
+              })}\n\n`,
+            ),
+          ).catch(() => {});
           const poolResult = {
             success: false,
-            statusCode: response.status,
+            statusCode: error instanceof KiroTruncatedError ? 502 : response.status,
             streamed: true,
             responseHeaders: publicHeaders,
-            error: `Stream read failed after partial response: ${(error as Error).message}`,
+            error: `Stream read failed after partial response: ${message}`,
             accountId: account.id,
           };
           this.logAttempt(
@@ -678,7 +694,10 @@ export class KiroAccountPool {
       );
       const poolResult: PoolResult = {
         success: false,
-        statusCode: axiosError.response?.status || 500,
+        statusCode:
+          error instanceof KiroTruncatedError
+            ? 502
+            : axiosError.response?.status || 500,
         response,
         error: message,
         isUnrecoverable: unrecoverableReason !== undefined,

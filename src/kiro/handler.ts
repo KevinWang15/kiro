@@ -88,6 +88,19 @@ function getKiroFailureMessage(
   return `Kiro upstream exception ${event.exceptionType}${details}`;
 }
 
+// Kiro sends a meteringEvent (the credits charged) as the last frame of every
+// finished reply. When it is missing, Kiro closed the stream early: seen near
+// the context limit or under load, with HTTP 200 and no error frame. Report
+// that as an error instead of passing a cut-off reply off as end_turn.
+export class KiroTruncatedError extends Error {
+  constructor(textChars: number, toolUses: number) {
+    super(
+      `Kiro closed the stream before finishing the reply (no metering event; got ${textChars} chars of text, ${toolUses} tool calls)`,
+    );
+    this.name = "KiroTruncatedError";
+  }
+}
+
 // Claude Code puts an "x-anthropic-billing-header: ...; cch=<hash>;" line in
 // its system prompt. The cch value changes on every request, so leaving it in
 // makes each system prompt unique, which breaks prefix matching (prompt cache)
@@ -468,6 +481,10 @@ export default class KiroApiProviderHandler {
         case "error":
           throw new Error(getKiroFailureMessage(event));
       }
+    }
+
+    if (creditConsumption === null) {
+      throw new KiroTruncatedError(textContent.length, toolJsonBuffers.size);
     }
 
     if (hasToolUse && stopReason === "end_turn") {

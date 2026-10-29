@@ -16,7 +16,7 @@ import {
 } from "../src/kiro/cache-simulation.ts";
 import { calculateClaudeCost } from "../src/usage/pricing.ts";
 import KiroApiProviderHandler, { stripBillingHeaderCch } from "../src/kiro/handler.ts";
-import { eventFrame, successfulKiroStream } from "./helpers.ts";
+import { eventFrame, meteringFrame, successfulKiroStream } from "./helpers.ts";
 
 const user = (content: any) => ({ role: "user", content });
 const assistant = (content: any) => ({ role: "assistant", content });
@@ -271,7 +271,7 @@ for (const stream of [false, true]) {
     const bytes = Buffer.concat([
       eventFrame({ content: reply.slice(0, 20) }),
       eventFrame({ content: reply.slice(20) }),
-      eventFrame({ contextUsagePercentage: 1 }),
+      eventFrame({ contextUsagePercentage: 1 }), meteringFrame(),
     ]);
     const request = {
       model: "claude-sonnet-4-5",
@@ -307,7 +307,7 @@ for (const stream of [false, true]) {
 }
 
 test("without thinking requested, tags are left as the model wrote them", async () => {
-  const bytes = Buffer.concat([eventFrame({ content: "<thinking>x</thinking>\n\ny" }), eventFrame({ contextUsagePercentage: 1 })]);
+  const bytes = Buffer.concat([eventFrame({ content: "<thinking>x</thinking>\n\ny" }), eventFrame({ contextUsagePercentage: 1 }), meteringFrame()]);
   const request = { model: "claude-sonnet-4-5", messages: [{ role: "user", content: "hi" }] } as MessagesRequest;
   const handler = new KiroApiProviderHandler(new CacheSimulator(new InMemoryCacheStore(new MockClock(0))));
   const out = await handler.transformResponseBody(200, bytes, request, convertRequest(request));
@@ -328,7 +328,7 @@ test("thinking tags: punctuation is fine, quoted or fenced mentions are not tags
 
 test("streaming handles punctuation before </thinking> split across chunks", async () => {
   const reply = "<thinking>\nso 391 is not prime.</thinking>\n\nNo.";
-  const bytes = Buffer.concat([...reply].map((ch) => eventFrame({ content: ch })).concat([eventFrame({ contextUsagePercentage: 1 })]));
+  const bytes = Buffer.concat([...reply].map((ch) => eventFrame({ content: ch })).concat([eventFrame({ contextUsagePercentage: 1 }), meteringFrame()]));
   const request = { model: "claude-sonnet-4-5", stream: true, thinking: { type: "enabled", budget_tokens: 1024 }, messages: [{ role: "user", content: "?" }] } as MessagesRequest;
   const handler = new KiroApiProviderHandler(new CacheSimulator(new InMemoryCacheStore(new MockClock(0))));
   let sse = "";
@@ -348,7 +348,7 @@ test("a thinking tag mentioned mid-answer never hides the rest of the answer", a
   for (const stream of [false, true]) {
     const request = { model: "claude-opus-4-6", stream, thinking: { type: "enabled", budget_tokens: 1024 }, messages: [{ role: "user", content: "x" }] } as MessagesRequest;
     const handler = new KiroApiProviderHandler(new CacheSimulator(new InMemoryCacheStore(new MockClock(0))));
-    const bytes = Buffer.concat([...[...reply].map((ch) => eventFrame({ content: ch })), eventFrame({ contextUsagePercentage: 1 })]);
+    const bytes = Buffer.concat([...[...reply].map((ch) => eventFrame({ content: ch })), eventFrame({ contextUsagePercentage: 1 }), meteringFrame()]);
     let blocks: Array<{ type: string; text: string }>;
     if (stream) {
       let sse = "";

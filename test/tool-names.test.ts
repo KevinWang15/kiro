@@ -4,7 +4,7 @@ import { createHash } from "node:crypto";
 import { convertRequest } from "../src/kiro/converter.ts";
 import KiroApiProviderHandler from "../src/kiro/handler.ts";
 import type { MessagesRequest } from "../src/kiro/types.ts";
-import { eventFrame } from "./helpers.ts";
+import { eventFrame, meteringFrame } from "./helpers.ts";
 
 const longName = "mcp__plugin_cloudflare_cloudflare-docs__search_cloudflare_documentation";
 function requestFor(name: string): MessagesRequest {
@@ -23,7 +23,7 @@ function toolStream(name: string): Buffer {
   return Buffer.concat([
     eventFrame({ name, toolUseId: "call-one", input: '{"q":', stop: false }),
     eventFrame({ name, toolUseId: "call-one", input: '"test"}', stop: true }),
-    eventFrame({ contextUsagePercentage: 1 }),
+    eventFrame({ contextUsagePercentage: 1 }), meteringFrame(),
   ]);
 }
 

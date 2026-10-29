@@ -5,7 +5,7 @@ import { type AddressInfo } from "node:net";
 import { AppDatabase } from "../src/db.ts";
 import { createServerContext } from "../src/server.ts";
 import { config } from "../src/config.ts";
-import { successfulKiroStream } from "./helpers.ts";
+import { eventFrame, successfulKiroStream } from "./helpers.ts";
 
 async function listen(server: http.Server): Promise<string> {
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
@@ -69,6 +69,11 @@ async function createHarness(t: test.TestContext) {
         res.writeHead(200, {
           "content-type": "application/vnd.amazon.eventstream",
         });
+        if (req.headers.authorization === "Bearer kiro-truncates") {
+          // Kiro closing the stream mid-reply: content but no meteringEvent.
+          res.end(Buffer.concat([eventFrame({ content: "Half a repl" }), eventFrame({ contextUsagePercentage: 90 })]));
+          return;
+        }
         res.end(successfulKiroStream("Hello from local Kiro", 0.25));
       });
       return;
@@ -306,4 +311,23 @@ test("when every account fails, the client gets the last real Kiro error", async
   const result = await sendMessage(baseUrl, "claude-sonnet-4-5");
   assert.ok([402, 403].includes(result.response.status), String(result.response.status));
   assert.match(JSON.stringify(result.body), /Quota exhausted|suspicious activity/);
+});
+
+test("a reply Kiro cuts off (no metering event) is reported as an error, not end_turn", async (t) => {
+  const { baseUrl } = await createHarness(t);
+  await importAccount(baseUrl, "kiro-truncates");
+  const json = await sendMessage(baseUrl, "claude-sonnet-4-6");
+  assert.equal(json.response.status, 502);
+  assert.equal(json.body.type, "error");
+  assert.match(json.body.error.message, /closed the stream before finishing/);
+
+  const response = await fetch(`${baseUrl}/v1/messages`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ model: "claude-sonnet-4-6", stream: true, messages: [{ role: "user", content: "hello" }] }),
+  });
+  const sse = await response.text();
+  assert.match(sse, /Half a repl/);
+  assert.doesNotMatch(sse, /end_turn|message_stop/);
+  assert.match(sse, /event: error\ndata: \{"type":"error","error":\{"type":"overloaded_error","message":"Kiro closed the stream before finishing/);
 });
