@@ -814,12 +814,6 @@ tbody tr:hover {
 .proxies-table .mono {
   font-size: 12px;
 }
-/* "Testing…" is wider than "Test": reserve it so the row never shifts. */
-.proxies-table [data-proxy-action="test"],
-.accounts-table [data-action="test"] {
-  min-width: 90px;
-  justify-content: flex-start;
-}
 .provider {
   color: var(--accent-text);
   font-weight: 500;
