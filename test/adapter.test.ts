@@ -340,3 +340,33 @@ test("streaming handles punctuation before </thinking> split across chunks", asy
   assert.equal(thinking, "so 391 is not prime.");
   assert.equal(text, "No.");
 });
+
+test("a thinking tag mentioned mid-answer never hides the rest of the answer", async () => {
+  // The exact shape that cut off replies in Claude Code: the tag mentioned in
+  // a table cell after the answer has started.
+  const reply = "Table row: `` Use the `<thinking>` tag `` | ignored | still ignored |\nAnd the rest of the answer continues here.";
+  for (const stream of [false, true]) {
+    const request = { model: "claude-opus-4-6", stream, thinking: { type: "enabled", budget_tokens: 1024 }, messages: [{ role: "user", content: "x" }] } as MessagesRequest;
+    const handler = new KiroApiProviderHandler(new CacheSimulator(new InMemoryCacheStore(new MockClock(0))));
+    const bytes = Buffer.concat([...[...reply].map((ch) => eventFrame({ content: ch })), eventFrame({ contextUsagePercentage: 1 })]);
+    let blocks: Array<{ type: string; text: string }>;
+    if (stream) {
+      let sse = "";
+      async function* chunks() { yield bytes; }
+      await handler.streamResponse(chunks(), request, convertRequest(request), { onChunk: (c) => { sse += c; } });
+      blocks = [];
+      for (const e of sse.split("\n").filter((l) => l.startsWith("data: ")).map((l) => JSON.parse(l.slice(6)))) {
+        if (e.type === "content_block_start") blocks[e.index] = { type: e.content_block.type, text: "" };
+        if (e.type === "content_block_delta") blocks[e.index].text += e.delta.thinking ?? e.delta.text ?? "";
+      }
+      blocks = blocks.filter(Boolean);
+    } else {
+      const out = await handler.transformResponseBody(200, bytes, request, convertRequest(request));
+      blocks = (out.body as any).content.map((c: any) => ({ type: c.type, text: c.thinking ?? c.text }));
+    }
+    assert.deepEqual(blocks, [{ type: "text", text: reply }], stream ? "streaming" : "non-streaming");
+  }
+  assert.equal(splitThinking("The model emits <thinking> tags when reasoning.").thinking, "");
+  // Real replies still split, including Kiro's leading blank lines.
+  assert.deepEqual(splitThinking("\n\n<thinking>\n144\n</thinking>\n\n12 squared is 144."), { thinking: "144\n", text: "12 squared is 144." });
+});

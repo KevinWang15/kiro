@@ -64,24 +64,23 @@ export function splitThinking(content: string): { thinking: string; text: string
 }
 
 /**
- * Find the real <thinking> start tag: the first one not quoted (see
- * isQuotedTag), e.g. `<thinking>`, "<thinking>" or one inside a code fence.
+ * Find the real <thinking> start tag. Kiro always puts its reasoning first, so
+ * the tag only counts at the very start of the reply (after optional
+ * whitespace). A <thinking> mentioned later in an answer is ordinary text,
+ * however it's quoted; treating it as a tag would hide the rest of the answer.
  */
 export function findRealThinkingStartTag(buffer: string): number | null {
-  const TAG = "<thinking>";
-  let searchStart = 0;
+  const pos = buffer.length - buffer.trimStart().length;
+  return buffer.startsWith("<thinking>", pos) ? pos : null;
+}
 
-  while (true) {
-    const pos = buffer.indexOf(TAG, searchStart);
-    if (pos === -1) return null;
-
-    if (!isQuotedTag(buffer, pos, TAG.length)) {
-      return pos;
-    }
-
-    // Skip and continue searching
-    searchStart = pos + 1;
-  }
+/**
+ * Whether more text could still turn this buffer into a reply that starts with
+ * <thinking>: only whitespace so far, or whitespace plus the tag's beginning.
+ */
+export function couldStartWithThinkingTag(buffer: string): boolean {
+  const rest = buffer.trimStart();
+  return "<thinking>".startsWith(rest);
 }
 
 /**

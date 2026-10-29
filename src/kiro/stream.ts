@@ -15,6 +15,7 @@ import {
   findRealThinkingEndTag,
   findRealThinkingEndTagAtBufferEnd,
   findRealThinkingStartTag,
+  couldStartWithThinkingTag,
 } from "./utils.ts";
 import { calculateTotalContextTokens, estimateTokens } from "./token.ts";
 
@@ -396,22 +397,14 @@ export class StreamContext {
             },
           );
           events.push(...startEvents);
-        } else {
-          // No start tag found, keep buffering
-          // But flush safe content if it looks like regular text
-          const targetLen = Math.max(
-            0,
-            this.thinkingBuffer.length - "<thinking>".length,
-          );
-          const safeLen = findCharBoundary(this.thinkingBuffer, targetLen);
-          if (safeLen > 0) {
-            const safeContent = this.thinkingBuffer.substring(0, safeLen);
-            if (safeContent.trim()) {
-              events.push(...this.createTextDeltaEvents(safeContent));
-              this.thinkingBuffer = this.thinkingBuffer.substring(safeLen);
-            }
-          }
+        } else if (couldStartWithThinkingTag(this.thinkingBuffer)) {
+          // Only whitespace or a partial "<thinking" so far: wait for more.
           break;
+        } else {
+          // The reply doesn't start with <thinking>, so it has no thinking
+          // block. Everything is answer text from here on, including any
+          // later mention of the tag.
+          this.thinkingExtracted = true;
         }
       } else if (this.inThinkingBlock) {
         // Strip leading newline after <thinking>
