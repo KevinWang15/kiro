@@ -1,4 +1,4 @@
-import type { AppDatabase } from "../db.js";
+import type { AppDatabase } from "../db.ts";
 
 export interface RequestLogEntry {
   accountId: number | null;

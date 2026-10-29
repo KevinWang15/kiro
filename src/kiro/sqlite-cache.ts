@@ -1,5 +1,5 @@
-import type { AppDatabase } from "../db.js";
-import type { ICacheStore } from "./cache-simulation.js";
+import type { AppDatabase } from "../db.ts";
+import type { ICacheStore } from "./cache-simulation.ts";
 
 export class SqliteCacheStore implements ICacheStore {
   constructor(private readonly database: AppDatabase) {}

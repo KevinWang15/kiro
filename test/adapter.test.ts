@@ -1,21 +1,21 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { convertRequest } from "../src/kiro/converter.js";
+import { convertRequest } from "../src/kiro/converter.ts";
 import {
   calculateTotalContextTokens,
   estimateTokens,
-} from "../src/kiro/token.js";
-import { mapModel } from "../src/kiro/utils.js";
+} from "../src/kiro/token.ts";
+import { mapModel } from "../src/kiro/utils.ts";
 import {
   CacheSimulator,
   InMemoryCacheStore,
   MockClock,
   computePrefixHash,
   CACHE_KEY_PREFIX,
-} from "../src/kiro/cache-simulation.js";
-import { calculateClaudeCost } from "../src/usage/pricing.js";
-import KiroApiProviderHandler from "../src/kiro/handler.js";
-import { successfulKiroStream } from "./helpers.js";
+} from "../src/kiro/cache-simulation.ts";
+import { calculateClaudeCost } from "../src/usage/pricing.ts";
+import KiroApiProviderHandler from "../src/kiro/handler.ts";
+import { successfulKiroStream } from "./helpers.ts";
 
 const user = (content: any) => ({ role: "user", content });
 const assistant = (content: any) => ({ role: "assistant", content });

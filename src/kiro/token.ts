@@ -1,10 +1,10 @@
 import {
-  AnthropicMessage,
-  AnthropicTool,
-  CountTokensResponse,
-  MessagesRequest,
-  SystemMessage,
-} from "./types.js";
+  type AnthropicMessage,
+  type AnthropicTool,
+  type CountTokensResponse,
+  type MessagesRequest,
+  type SystemMessage,
+} from "./types.ts";
 
 export type KiroThinkingTokenPercentRange = readonly [number, number];
 

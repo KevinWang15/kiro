@@ -1,5 +1,5 @@
 import * as crypto from "node:crypto";
-import { AnthropicMessage, SystemMessage } from "./types.js";
+import { type AnthropicMessage, type SystemMessage } from "./types.ts";
 
 export interface IClock {
   now(): number;

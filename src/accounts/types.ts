@@ -1,4 +1,4 @@
-import type { ProviderExtraConfig } from "../kiro/provider.js";
+import type { ProviderExtraConfig } from "../kiro/provider.ts";
 
 export type KiroCredentials = ProviderExtraConfig;
 

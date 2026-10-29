@@ -9,7 +9,7 @@
  * - Error recovery
  */
 
-import { KiroEvent, ToolUseEvent } from "./types.js";
+import { type KiroEvent, type ToolUseEvent } from "./types.ts";
 
 // AWS Event Stream constants
 const PRELUDE_SIZE = 12; // 4 (total_len) + 4 (header_len) + 4 (prelude_crc)

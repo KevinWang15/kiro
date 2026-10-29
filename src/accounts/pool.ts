@@ -2,28 +2,28 @@ import axios from "axios";
 import { createHash } from "node:crypto";
 import KiroApiProviderHandler, {
   getKiroUnrecoverableErrorReason,
-} from "../kiro/handler.js";
-import { CacheSimulator } from "../kiro/cache-simulation.js";
-import { SqliteCacheStore } from "../kiro/sqlite-cache.js";
-import { getKiroRuntimeBaseUrl } from "../kiro/constants.js";
+} from "../kiro/handler.ts";
+import { CacheSimulator } from "../kiro/cache-simulation.ts";
+import { SqliteCacheStore } from "../kiro/sqlite-cache.ts";
+import { getKiroRuntimeBaseUrl } from "../kiro/constants.ts";
 import {
   isKiroPremiumFromStatusInfo,
   shouldPreferPremiumKiroAccount,
   supportsKiroExperimentalModel,
-} from "../kiro/utils.js";
-import { hasWebSearchTool, handleWebSearchRequest } from "../kiro/websearch.js";
-import type { MessagesRequest } from "../kiro/types.js";
-import type { McpShimConfig } from "../kiro/mcp-shim.js";
-import type { ProviderExtraConfig } from "../kiro/provider.js";
-import { buildAgentFromProxy } from "../proxy.js";
-import { config } from "../config.js";
-import type { AccountRepository } from "./repository.js";
-import type { ProxyRepository } from "./proxies.js";
-import type { TokenManager } from "./token-manager.js";
-import type { UsageRepository } from "../usage/repository.js";
-import type { AccountRecord, KiroCredentials } from "./types.js";
-import { parseCredentials } from "./types.js";
-import { normalizeKiroExtraConfigAliases } from "./token-manager.js";
+} from "../kiro/utils.ts";
+import { hasWebSearchTool, handleWebSearchRequest } from "../kiro/websearch.ts";
+import type { MessagesRequest } from "../kiro/types.ts";
+import type { McpShimConfig } from "../kiro/mcp-shim.ts";
+import type { ProviderExtraConfig } from "../kiro/provider.ts";
+import { buildAgentFromProxy } from "../proxy.ts";
+import { config } from "../config.ts";
+import type { AccountRepository } from "./repository.ts";
+import type { ProxyRepository } from "./proxies.ts";
+import type { TokenManager } from "./token-manager.ts";
+import type { UsageRepository } from "../usage/repository.ts";
+import type { AccountRecord, KiroCredentials } from "./types.ts";
+import { parseCredentials } from "./types.ts";
+import { normalizeKiroExtraConfigAliases } from "./token-manager.ts";
 
 const AUTO_DISABLE_RETRY_COUNT = 5;
 const AUTO_DISABLE_RETRY_DELAY_MS = 2000;

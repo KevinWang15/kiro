@@ -1,19 +1,19 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import http from "node:http";
-import { parseCredentialInput } from "../src/accounts/credential-input.js";
+import { parseCredentialInput } from "../src/accounts/credential-input.ts";
 import {
   normalizeKiroExtraConfigAliases,
   TokenManager,
-} from "../src/accounts/token-manager.js";
+} from "../src/accounts/token-manager.ts";
 import {
   aggregateUsage,
   canFetchKiroUsage,
   shouldUseCborApi,
-} from "../src/accounts/usage-service.js";
-import { AppDatabase } from "../src/db.js";
-import { AccountRepository } from "../src/accounts/repository.js";
-import { ProxyRepository } from "../src/accounts/proxies.js";
+} from "../src/accounts/usage-service.ts";
+import { AppDatabase } from "../src/db.ts";
+import { AccountRepository } from "../src/accounts/repository.ts";
+import { ProxyRepository } from "../src/accounts/proxies.ts";
 
 function fakeJwt(payload: Record<string, unknown>): string {
   const encoded = Buffer.from(JSON.stringify(payload)).toString("base64url");

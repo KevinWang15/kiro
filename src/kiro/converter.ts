@@ -10,30 +10,30 @@
 
 import { v4 as uuidv4 } from "uuid";
 import {
-  MessagesRequest,
-  AnthropicMessage,
-  KiroRequest,
+  type MessagesRequest,
+  type AnthropicMessage,
+  type KiroRequest,
   ConversionError,
-  KiroTool,
-  ToolResult,
-  ToolUseEntry,
-  HistoryMessage,
-  ContentBlock,
-  KiroImage,
-  KiroDocument,
-  AssistantResponseMessage,
-  UserInputMessage,
-  UserInputMessageContext,
+  type KiroTool,
+  type ToolResult,
+  type ToolUseEntry,
+  type HistoryMessage,
+  type ContentBlock,
+  type KiroImage,
+  type KiroDocument,
+  type AssistantResponseMessage,
+  type UserInputMessage,
+  type UserInputMessageContext,
   MAX_BUDGET_TOKENS,
   DEFAULT_EFFORT,
-} from "./types.js";
+} from "./types.ts";
 import {
   mapModel,
   getThinkingType,
   validateToolPairing,
   removeOrphanedToolUses,
   getConversationId,
-} from "./utils.js";
+} from "./utils.ts";
 
 // ============================================================================
 // Constants

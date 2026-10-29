@@ -2,7 +2,7 @@ import {
   inferMicrosoftScopes,
   inferMicrosoftTokenEndpoint,
   parseJwtPayload,
-} from "./credential-utils.js";
+} from "./credential-utils.ts";
 
 export interface KiroCanonicalJson {
   accessToken: string;

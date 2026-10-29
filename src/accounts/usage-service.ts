@@ -1,22 +1,22 @@
 import axios from "axios";
 import { encode, decode } from "cbor-x";
 import { v4 as uuidv4 } from "uuid";
-import { buildAgentFromProxy } from "../proxy.js";
+import { buildAgentFromProxy } from "../proxy.ts";
 import {
   buildHeaders,
   generateMachineId,
   getSystemRuntimeInfo,
-} from "../kiro/handler.js";
-import { getKiroRuntimeBaseUrl } from "../kiro/constants.js";
-import { isKiroPremiumUsageLimit } from "../kiro/utils.js";
-import { config } from "../config.js";
-import { isApiKeyAccount } from "./token-manager.js";
-import type { AccountRepository } from "./repository.js";
-import type { ProxyRepository } from "./proxies.js";
-import type { TokenManager } from "./token-manager.js";
-import type { KiroCredentials, KiroStatusInfo, ProxyRecord } from "./types.js";
-import { parseCredentials } from "./types.js";
-import { isSocialLoginAccount } from "./credential-utils.js";
+} from "../kiro/handler.ts";
+import { getKiroRuntimeBaseUrl } from "../kiro/constants.ts";
+import { isKiroPremiumUsageLimit } from "../kiro/utils.ts";
+import { config } from "../config.ts";
+import { isApiKeyAccount } from "./token-manager.ts";
+import type { AccountRepository } from "./repository.ts";
+import type { ProxyRepository } from "./proxies.ts";
+import type { TokenManager } from "./token-manager.ts";
+import type { KiroCredentials, KiroStatusInfo, ProxyRecord } from "./types.ts";
+import { parseCredentials } from "./types.ts";
+import { isSocialLoginAccount } from "./credential-utils.ts";
 
 const KIRO_VERSION = "0.9.2";
 

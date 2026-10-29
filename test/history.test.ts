@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { AppDatabase } from "../src/db.js";
-import { UsageRepository } from "../src/usage/repository.js";
+import { AppDatabase } from "../src/db.ts";
+import { UsageRepository } from "../src/usage/repository.ts";
 
 function entry(
   database: AppDatabase,

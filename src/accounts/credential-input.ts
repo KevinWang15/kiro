@@ -1,5 +1,5 @@
-import { parseKiroJsonText, toKiroCanonicalJson } from "./credentials.js";
-import type { KiroJsonAccountOption } from "./credentials.js";
+import { parseKiroJsonText, toKiroCanonicalJson } from "./credentials.ts";
+import type { KiroJsonAccountOption } from "./credentials.ts";
 
 export function parseCredentialInput(text: string): KiroJsonAccountOption[] {
   const trimmed = text.trim();
