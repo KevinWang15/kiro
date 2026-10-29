@@ -1,10 +1,12 @@
 import {
   type AnthropicMessage,
   type AnthropicTool,
+  type ContentBlock,
   type CountTokensResponse,
   type MessagesRequest,
   type SystemMessage,
 } from "./types.ts";
+import { renderToolReferences } from "./tool-references.ts";
 
 export type KiroThinkingTokenPercentRange = readonly [number, number];
 
@@ -45,7 +47,10 @@ export function estimateTokens(text: string): number {
 /**
  * Extract text content from a message
  */
-function extractTextFromContent(content: string | unknown[]): string {
+function extractTextFromContent(
+  content: string | unknown[],
+  toolsByName: ReadonlyMap<string, AnthropicTool> = new Map(),
+): string {
   if (typeof content === "string") {
     return content;
   }
@@ -62,8 +67,13 @@ function extractTextFromContent(content: string | unknown[]): string {
         block.type === "tool_reference" &&
         typeof block.tool_name === "string"
       ) {
+        // Count what convertRequest() actually sends: the expanded definition.
         texts.push(
-          JSON.stringify({ type: "tool_reference", tool_name: block.tool_name }),
+          renderToolReferences(
+            [{ type: "tool_reference", tool_name: block.tool_name }],
+            toolsByName,
+            (name) => name,
+          ),
         );
       } else if (block.type === "tool_use") {
         if (typeof block.name === "string") texts.push(block.name);
@@ -72,7 +82,7 @@ function extractTextFromContent(content: string | unknown[]): string {
         if (typeof block.content === "string") {
           texts.push(block.content);
         } else if (Array.isArray(block.content)) {
-          texts.push(extractTextFromContent(block.content));
+          texts.push(extractTextFromContent(block.content, toolsByName));
         }
       }
     }
@@ -102,8 +112,9 @@ export function estimateInputTokens(
   }
 
   // User messages
+  const toolsByName = new Map((tools || []).map((tool) => [tool.name, tool]));
   for (const msg of messages) {
-    total += estimateTokens(extractTextFromContent(msg.content));
+    total += estimateTokens(extractTextFromContent(msg.content, toolsByName));
   }
 
   // Tools

@@ -10,9 +10,11 @@
 
 import { v4 as uuidv4 } from "uuid";
 import { createToolNameMap } from "./tool-names.ts";
+import { renderToolReferences } from "./tool-references.ts";
 import {
   type MessagesRequest,
   type AnthropicMessage,
+  type AnthropicTool,
   type KiroRequest,
   ConversionError,
   type KiroTool,
@@ -49,33 +51,43 @@ const EDIT_TOOL_DESCRIPTION_SUFFIX = `- IMPORTANT: If the \`new_string\` content
 
 const SYSTEM_CHUNKED_POLICY = `When the Write or Edit tool has content size limits, always comply silently. Never suggest bypassing these limits via alternative tools. Never ask the user whether to switch approaches. Complete all chunked operations without commentary.`;
 
-// Claude Code sends discovered tools in tools[] and references to them in the
-// ToolSearch result. Kiro receives the definitions through convertTools(), but
-// has no tool_reference content block, so preserve references as text rather
-// than dropping the search result. Use the same names as the wire definitions.
+// Kiro has no tool_reference block; see tool-references.ts.
+function isToolReference(block: ContentBlock): boolean {
+  return block.type === "tool_reference" && typeof block.tool_name === "string";
+}
+
 function preserveToolReferences(
   content: string | ContentBlock[],
+  toolsByName: ReadonlyMap<string, AnthropicTool>,
   toWireName: (name: string) => string,
 ): string | ContentBlock[] {
   if (!Array.isArray(content)) return content;
-  return content.map((block) => {
-    if (block.type === "tool_reference" && typeof block.tool_name === "string") {
-      return {
-        type: "text",
-        text: JSON.stringify({
-          type: "tool_reference",
-          tool_name: toWireName(block.tool_name),
-        }),
-      };
+  const result: ContentBlock[] = [];
+  // Group consecutive references into one <functions> block, keeping their
+  // position relative to any surrounding text.
+  let run: ContentBlock[] = [];
+  const flush = () => {
+    if (!run.length) return;
+    result.push({ type: "text", text: renderToolReferences(run, toolsByName, toWireName) });
+    run = [];
+  };
+  for (const block of content) {
+    if (isToolReference(block)) {
+      run.push(block);
+      continue;
     }
+    flush();
     if (block.type === "tool_result" && Array.isArray(block.content)) {
-      return {
+      result.push({
         ...block,
-        content: preserveToolReferences(block.content, toWireName),
-      };
+        content: preserveToolReferences(block.content, toolsByName, toWireName),
+      });
+    } else {
+      result.push(block);
     }
-    return block;
-  });
+  }
+  flush();
+  return result;
 }
 
 // ============================================================================
@@ -714,11 +726,16 @@ export function convertRequest(
   },
 ): KiroRequest {
   const toolNames = createToolNameMap(req);
+  const toolsByName = new Map((req.tools || []).map((tool) => [tool.name, tool]));
   req = {
     ...req,
     messages: req.messages.map((message) => ({
       ...message,
-      content: preserveToolReferences(message.content, toolNames.toWireName),
+      content: preserveToolReferences(
+        message.content,
+        toolsByName,
+        toolNames.toWireName,
+      ),
     })),
   };
   // 1. Map model
