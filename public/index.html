@@ -5,25 +5,96 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="color-scheme" content="dark" />
     <title>Kiro Local Adapter</title>
+    <link
+      rel="preload"
+      href="/vendor/fonts/inter/files/inter-latin-wght-normal.woff2"
+      as="font"
+      type="font/woff2"
+      crossorigin
+    />
+    <link
+      rel="preload"
+      href="/vendor/fonts/jetbrains-mono/files/jetbrains-mono-latin-wght-normal.woff2"
+      as="font"
+      type="font/woff2"
+      crossorigin
+    />
+    <link rel="stylesheet" href="/vendor/fonts/inter/index.css" />
+    <link rel="stylesheet" href="/vendor/fonts/jetbrains-mono/index.css" />
     <link rel="stylesheet" href="/vendor/notyf.min.css" />
     <link rel="stylesheet" href="/styles.css" />
   </head>
   <body>
-    <header class="topbar">
-      <a class="brand" href="/"
-        ><span class="brand-mark">K</span
-        ><span>KIRO <small>LOCAL ADAPTER</small></span></a
+    <div class="progress-bar" id="progress-bar" aria-hidden="true"></div>
+    <header class="titlebar">
+      <div class="titlebar-tabs">
+        <a class="workspace-tab active" href="/">
+          <i data-lucide="server"></i><span>Kiro adapter</span>
+          <span
+            class="count-pill"
+            id="tab-account-count"
+            role="status"
+            aria-label="Loading accounts"
+            ><span class="spinner xs"></span
+          ></span>
+          <script>
+            // Show the last known count before first paint (no spinner/0 flash).
+            try {
+              const cached = localStorage.getItem("kiro.accountCount");
+              if (cached !== null) {
+                const pill = document.getElementById("tab-account-count");
+                pill.textContent = cached;
+                pill.setAttribute("aria-label", cached + " accounts");
+              }
+            } catch {}
+          </script>
+        </a>
+      </div>
+      <button
+        class="command-bar"
+        id="copy-base-url"
+        title="Copy ANTHROPIC_BASE_URL"
       >
-      <nav>
-        <a href="/" data-nav="accounts">Accounts</a>
-        <a href="/metrics" data-nav="metrics">Metrics</a>
-        <a href="/history" data-nav="history">History</a>
-        <a href="/proxies" data-nav="proxies">Proxies</a>
-      </nav>
+        <span class="command-key">ANTHROPIC_BASE_URL</span>
+        <span class="command-sep">—</span>
+        <span id="titlebar-base-url"></span>
+        <i data-lucide="copy"></i>
+      </button>
+      <div class="titlebar-actions">
+        <button class="ghost-button" id="titlebar-copy-script">
+          <i data-lucide="square-terminal"></i><span>Connect Claude Code</span>
+        </button>
+      </div>
     </header>
 
+    <nav class="rail" aria-label="Primary">
+      <a class="rail-logo" href="/" aria-label="Kiro local adapter home">
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path
+            class="ghost-body"
+            d="M12 2a8 8 0 0 0-8 8v12l3-3 2.5 2.5L12 19l2.5 2.5L17 19l3 3V10a8 8 0 0 0-8-8z"
+          />
+          <ellipse class="ghost-eye" cx="9.2" cy="10.5" rx="1.1" ry="1.8" />
+          <ellipse class="ghost-eye" cx="14.8" cy="10.5" rx="1.1" ry="1.8" />
+        </svg>
+      </a>
+      <a href="/" data-nav="accounts" title="Accounts" aria-label="Accounts"
+        ><i data-lucide="users"></i
+      ></a>
+      <a href="/metrics" data-nav="metrics" title="Metrics" aria-label="Metrics"
+        ><i data-lucide="activity"></i
+      ></a>
+      <a href="/history" data-nav="history" title="History" aria-label="History"
+        ><i data-lucide="history"></i
+      ></a>
+      <span class="rail-spacer"></span>
+      <a href="/proxies" data-nav="proxies" title="Proxies" aria-label="Proxies"
+        ><i data-lucide="network"></i
+      ></a>
+    </nav>
+
     <main>
-      <section id="accounts-page" class="page">
+      <section id="accounts-page" class="page hidden">
         <div class="page-heading">
           <div>
             <p class="eyebrow">ANTHROPIC COMPATIBILITY</p>
@@ -48,7 +119,7 @@
             </button>
           </div>
         </div>
-        <div class="summary-grid" id="account-summary"></div>
+        <div class="summary-grid" id="account-summary"><div class="summary-card skeleton"><span class="label">&nbsp;</span><strong></strong><small></small></div><div class="summary-card skeleton"><span class="label">&nbsp;</span><strong></strong><small></small></div><div class="summary-card skeleton"><span class="label">&nbsp;</span><strong></strong><small></small></div><div class="summary-card skeleton"><span class="label">&nbsp;</span><strong></strong><small></small></div></div>
         <div class="endpoint setup-card">
           <div class="setup-main">
             <div class="setup-icon">&lt;/&gt;</div>
@@ -108,7 +179,7 @@
                   <th>Actions</th>
                 </tr>
               </thead>
-              <tbody id="accounts-body"></tbody>
+              <tbody id="accounts-body"><tr class="loading-row"><td colspan="10"><span class="spinner"></span>Loading accounts…</td></tr></tbody>
             </table>
           </div>
           <div id="accounts-empty" class="empty hidden">
@@ -135,10 +206,12 @@
           </div>
           <div class="actions">
             <div class="time-range-picker" id="metrics-time-range"></div>
-            <button class="button" id="refresh-metrics">Refresh</button>
+            <button class="button" id="refresh-metrics">
+              <i data-lucide="refresh-cw"></i><span>Refresh</span>
+            </button>
           </div>
         </div>
-        <div class="summary-grid" id="metrics-summary"></div>
+        <div class="summary-grid" id="metrics-summary"><div class="summary-card skeleton"><span class="label">&nbsp;</span><strong></strong><small></small></div><div class="summary-card skeleton"><span class="label">&nbsp;</span><strong></strong><small></small></div><div class="summary-card skeleton"><span class="label">&nbsp;</span><strong></strong><small></small></div><div class="summary-card skeleton"><span class="label">&nbsp;</span><strong></strong><small></small></div></div>
         <div class="panel chart-panel overview-panel">
           <div class="chart-header">
             <div>
@@ -147,7 +220,7 @@
             </div>
             <span>Drag to select a time range</span>
           </div>
-          <div class="chart overview" id="overview-chart"></div>
+          <div class="chart overview loading" id="overview-chart"></div>
         </div>
         <div class="chart-grid">
           <div class="panel chart-panel">
@@ -157,7 +230,7 @@
                 <p>USD per time bucket</p>
               </div>
             </div>
-            <div class="chart" id="cost-chart"></div>
+            <div class="chart loading" id="cost-chart"></div>
           </div>
           <div class="panel chart-panel">
             <div class="chart-header">
@@ -166,7 +239,7 @@
                 <p>Successful and failed requests</p>
               </div>
             </div>
-            <div class="chart" id="requests-chart"></div>
+            <div class="chart loading" id="requests-chart"></div>
           </div>
           <div class="panel chart-panel">
             <div class="chart-header">
@@ -175,7 +248,7 @@
                 <p>Total latency and time to first token</p>
               </div>
             </div>
-            <div class="chart" id="latency-chart"></div>
+            <div class="chart loading" id="latency-chart"></div>
           </div>
           <div class="panel chart-panel">
             <div class="chart-header">
@@ -184,7 +257,7 @@
                 <p>Input, output and cached tokens</p>
               </div>
             </div>
-            <div class="chart" id="tokens-chart"></div>
+            <div class="chart loading" id="tokens-chart"></div>
           </div>
         </div>
         <div class="metrics-model-grid">
@@ -195,7 +268,7 @@
                 <p>Estimated USD stacked by model</p>
               </div>
             </div>
-            <div class="chart model-chart" id="model-cost-chart"></div>
+            <div class="chart model-chart loading" id="model-cost-chart"></div>
           </div>
           <div class="panel model-table-panel">
             <div class="panel-heading">
@@ -215,7 +288,7 @@
                     <th>Average latency</th>
                   </tr>
                 </thead>
-                <tbody id="models-body"></tbody>
+                <tbody id="models-body"><tr class="loading-row"><td colspan="5"><span class="spinner"></span>Loading models…</td></tr></tbody>
               </table>
             </div>
           </div>
@@ -249,7 +322,7 @@
             </div>
             <span>Drag to select a time range</span>
           </div>
-          <div class="chart overview" id="history-usage-chart"></div>
+          <div class="chart overview loading" id="history-usage-chart"></div>
         </div>
         <div class="panel">
           <div class="panel-heading">
@@ -273,7 +346,7 @@
                   <th>Kiro credits</th>
                 </tr>
               </thead>
-              <tbody id="history-body"></tbody>
+              <tbody id="history-body"><tr class="loading-row"><td colspan="7"><span class="spinner"></span>Loading requests…</td></tr></tbody>
             </table>
           </div>
           <div id="history-empty" class="empty hidden">
@@ -310,7 +383,7 @@
                   <th>Actions</th>
                 </tr>
               </thead>
-              <tbody id="proxies-body"></tbody>
+              <tbody id="proxies-body"><tr class="loading-row"><td colspan="6"><span class="spinner"></span>Loading proxies…</td></tr></tbody>
             </table>
           </div>
           <div id="proxies-empty" class="empty hidden">

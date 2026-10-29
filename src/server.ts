@@ -378,6 +378,20 @@ export function createServerContext(database: AppDatabase): ServerContext {
       path.resolve(process.cwd(), "node_modules", "notyf", "notyf.min.css"),
     );
   });
+  // Self-hosted fonts from npm (no CDN). Each package's index.css references
+  // its woff2 files relatively, so serving the package directory is enough.
+  for (const [route, pkg] of [
+    ["inter", "inter"],
+    ["jetbrains-mono", "jetbrains-mono"],
+  ]) {
+    app.use(
+      `/vendor/fonts/${route}`,
+      express.static(
+        path.resolve(process.cwd(), "node_modules", "@fontsource-variable", pkg),
+        { maxAge: "30d", immutable: true },
+      ),
+    );
+  }
   app.use(express.static(publicDir));
   app.get(["/", "/metrics", "/history", "/proxies"], (_req, res) =>
     res.sendFile(path.join(publicDir, "index.html")),

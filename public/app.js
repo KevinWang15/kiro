@@ -50,8 +50,8 @@ const notyf = new Notyf({
   dismissible: true,
   position: { x: "right", y: "bottom" },
   types: [
-    { type: "success", background: "#25805f", icon: false },
-    { type: "error", background: "#a94452", icon: false },
+    { type: "success", background: "#1f6f46", icon: false },
+    { type: "error", background: "#9b3a44", icon: false },
   ],
 });
 function toast(message, error = false) {
@@ -91,16 +91,74 @@ function openDialog(id) {
 function closeDialog(id) {
   $(id).close();
 }
+// Loading indicators are delayed so fast responses never flash a spinner.
+// First loads show inline spinners/skeletons (already in the HTML); refreshes
+// keep the current content, dim it slightly and show a thin progress bar.
+const LOADING_DELAY_MS = 180;
+let activeLoads = 0;
+let progressTimer;
+function trackLoading(pageName, promise) {
+  const page = $(`#${pageName}-page`);
+  activeLoads++;
+  clearTimeout(progressTimer);
+  progressTimer = setTimeout(() => {
+    if (activeLoads > 0) $("#progress-bar").classList.add("active");
+  }, LOADING_DELAY_MS);
+  const dimTimer = page?.dataset.loaded
+    ? setTimeout(() => page.classList.add("refreshing"), LOADING_DELAY_MS)
+    : null;
+  return Promise.resolve(promise).finally(() => {
+    clearTimeout(dimTimer);
+    page?.classList.remove("refreshing");
+    if (page) page.dataset.loaded = "true";
+    if (--activeLoads === 0) {
+      clearTimeout(progressTimer);
+      $("#progress-bar").classList.remove("active");
+    }
+  });
+}
+
 function showPage(name) {
-  $$(".page").forEach((p) => p.classList.add("hidden"));
-  $(`#${name}-page`).classList.remove("hidden");
+  $$(".page").forEach((p) => p.classList.toggle("hidden", p.id !== `${name}-page`));
   $$("[data-nav]").forEach((a) =>
     a.classList.toggle("active", a.dataset.nav === name),
   );
-  if (name === "metrics") loadMetrics();
-  if (name === "history") loadHistory();
-  if (name === "proxies") loadProxies();
+  if (name === "accounts") trackLoading("accounts", loadAccounts());
+  if (name === "metrics") trackLoading("metrics", loadMetrics());
+  if (name === "history") trackLoading("history", loadHistory());
+  if (name === "proxies") trackLoading("proxies", loadProxies());
+  requestAnimationFrame(() => chartInstances.forEach((chart) => chart.resize()));
 }
+
+// Client-side navigation: switching views no longer reloads the document,
+// so the titlebar, rail and already-fetched data stay on screen.
+function navigate(path) {
+  if (location.pathname !== path) history.pushState({}, "", path);
+  showPage(currentPage());
+}
+document.addEventListener("click", (event) => {
+  const link = event.target.closest("a[href^='/']");
+  if (!link || event.defaultPrevented || event.button !== 0) return;
+  if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+  event.preventDefault();
+  navigate(link.getAttribute("href"));
+});
+
+// Remember the last known account count so a full reload shows it at once
+// instead of a placeholder; it is corrected as soon as the API answers.
+const ACCOUNT_COUNT_KEY = "kiro.accountCount";
+function setAccountCount(count) {
+  const pill = $("#tab-account-count");
+  pill.textContent = count;
+  pill.setAttribute("aria-label", `${count} accounts`);
+  try {
+    localStorage.setItem(ACCOUNT_COUNT_KEY, String(count));
+  } catch {}
+}
+try {
+  const cached = localStorage.getItem(ACCOUNT_COUNT_KEY);
+  if (cached !== null) setAccountCount(Number(cached));
+} catch {}
 
 async function loadAccounts() {
   const button = $("#reload-accounts");
@@ -123,6 +181,7 @@ async function loadAccounts() {
 function renderAccounts() {
   const accounts = state.accounts;
   $("#account-count").textContent = `${accounts.length} total`;
+  setAccountCount(accounts.length);
   $("#accounts-empty").classList.toggle("hidden", accounts.length > 0);
   const active = accounts.filter((a) => a.enabled && !a.autoDisabled).length;
   const credits = accounts.reduce(
@@ -428,20 +487,21 @@ async function proxyAction(action, id) {
 
 const chartInstances = new Map();
 const chartColors = [
-  "#8194ff",
-  "#f0ad4e",
-  "#48c78e",
-  "#ef6b73",
-  "#b678f0",
-  "#39bfd0",
-  "#ec70ad",
+  "#8b5cf6",
+  "#f5b544",
+  "#4ade80",
+  "#f87171",
+  "#7aa2ff",
+  "#2dd4bf",
+  "#f472b6",
 ];
+const chartFont = '"Inter Variable", ui-sans-serif, sans-serif';
 const tooltipStyle = {
-  backgroundColor: "#20242deF",
-  borderColor: "#3a4352",
-  textStyle: { color: "#e7ecf4", fontSize: 11 },
+  backgroundColor: "#1e1e24f2",
+  borderColor: "#33333c",
+  textStyle: { color: "#e8e8ec", fontSize: 12, fontFamily: chartFont },
   extraCssText:
-    "box-shadow:0 8px 28px #0007;border-radius:6px;padding:10px 12px;",
+    "box-shadow:0 10px 30px #0009;border-radius:8px;padding:10px 12px;",
 };
 
 function metricSummary(data) {
@@ -472,8 +532,8 @@ function metricSummary(data) {
 function timeAxis() {
   return {
     type: "time",
-    axisLine: { lineStyle: { color: "#343c49" } },
-    axisLabel: { color: "#8490a2", fontSize: 10, hideOverlap: true },
+    axisLine: { lineStyle: { color: "#33333c" } },
+    axisLabel: { color: "#84848f", fontSize: 11, fontFamily: chartFont, hideOverlap: true },
     axisTick: { show: false },
     splitLine: { show: false },
   };
@@ -482,10 +542,10 @@ function timeAxis() {
 function valueAxis(formatter) {
   return {
     type: "value",
-    axisLabel: { color: "#8490a2", fontSize: 10, formatter },
+    axisLabel: { color: "#84848f", fontSize: 11, fontFamily: chartFont, formatter },
     axisLine: { show: false },
     axisTick: { show: false },
-    splitLine: { lineStyle: { color: "#292e38", type: "dashed" } },
+    splitLine: { lineStyle: { color: "#26262d", type: "dashed" } },
   };
 }
 
@@ -495,7 +555,7 @@ function legend() {
     right: 16,
     itemWidth: 10,
     itemHeight: 7,
-    textStyle: { color: "#9ba6b5", fontSize: 10 },
+    textStyle: { color: "#b4b4bd", fontSize: 12, fontFamily: chartFont },
   };
 }
 
@@ -542,8 +602,9 @@ function emptyGraphic(show) {
           top: "middle",
           style: {
             text: "No requests in this time range",
-            fill: "#788495",
-            fontSize: 12,
+            fill: "#84848f",
+            fontSize: 13,
+            fontFamily: chartFont,
           },
         },
       ];
@@ -557,11 +618,12 @@ function setChart(id, option) {
     });
     chartInstances.set(id, chart);
   }
+  document.getElementById(id).classList.remove("loading");
   chart.setOption(
     {
       backgroundColor: "transparent",
       animationDuration: 350,
-      textStyle: { fontFamily: "Inter, sans-serif" },
+      textStyle: { fontFamily: chartFont },
       ...option,
     },
     true,
@@ -938,7 +1000,7 @@ function renderHistoryChart(data) {
     xAxis: timeAxis(),
     yAxis: valueAxis((value) => `$${value.toFixed(4)}`),
     graphic: emptyGraphic(data.totalSpent > 0),
-    series: [bar("Usage", spent, "#ef6262", 0, "usd")],
+    series: [bar("Usage", spent, "#8b5cf6", 0, "usd")],
   });
 }
 
@@ -947,11 +1009,8 @@ let historyRequestId = 0;
 async function loadHistory() {
   const requestId = ++historyRequestId;
   const button = $("#refresh-history");
-  const content = button.innerHTML;
   button.disabled = true;
-  button.innerHTML = '<i data-lucide="loader-circle"></i><span>Loading…</span>';
   button.classList.add("is-loading");
-  refreshIcons();
   try {
     state.historyRange = resolveRollingRange(state.historyRange, new Date());
     const query = rangeQuery(state.historyRange);
@@ -969,10 +1028,10 @@ async function loadHistory() {
   } catch (error) {
     toast(error.message, true);
   } finally {
-    button.disabled = false;
-    button.classList.remove("is-loading");
-    button.innerHTML = content;
-    refreshIcons();
+    if (requestId === historyRequestId) {
+      button.disabled = false;
+      button.classList.remove("is-loading");
+    }
   }
 }
 
@@ -990,6 +1049,7 @@ async function loadMetrics() {
   const requestId = ++metricsRequestId;
   const refreshButton = $("#refresh-metrics");
   refreshButton.disabled = true;
+  refreshButton.classList.add("is-loading");
   try {
     state.metricsRange = resolveRollingRange(state.metricsRange, new Date());
     const query = rangeQuery(state.metricsRange);
@@ -1041,7 +1101,7 @@ async function loadMetrics() {
       graphic: emptyGraphic(hasRequests),
       series: [
         line("Estimated cost", points(data, "totalCostUsd"), chartColors[0], 0),
-        bar("Requests", points(data, "totalRequests"), "#66758b", 1),
+        bar("Requests", points(data, "totalRequests"), "#4a4a56", 1),
         line(
           "Average latency",
           points(data, "avgLatencyMs"),
@@ -1077,11 +1137,11 @@ async function loadMetrics() {
         bar(
           "Success",
           points(data, "successRequests"),
-          "#43b581",
+          "#4ade80",
           0,
           "requests",
         ),
-        bar("Failed", points(data, "failedRequests"), "#ef6262", 0, "requests"),
+        bar("Failed", points(data, "failedRequests"), "#f87171", 0, "requests"),
       ],
     });
 
@@ -1163,7 +1223,10 @@ async function loadMetrics() {
   } catch (error) {
     toast(error.message, true);
   } finally {
-    refreshButton.disabled = false;
+    if (requestId === metricsRequestId) {
+      refreshButton.disabled = false;
+      refreshButton.classList.remove("is-loading");
+    }
   }
 }
 
@@ -1179,18 +1242,26 @@ $("#import-text").oninput = () => {
   clearTimeout(parseDebounce);
   parseDebounce = setTimeout(parseImport, 350);
 };
-$("#reload-accounts").onclick = loadAccounts;
+$("#reload-accounts").onclick = () => trackLoading("accounts", loadAccounts());
 $("#refresh-usage").onclick = refreshAllUsage;
 $("#save-account").onclick = saveAccount;
-$("#open-proxies").onclick = () => {
-  history.pushState({}, "", "/proxies");
-  showPage("proxies");
-};
+$("#open-proxies").onclick = () => navigate("/proxies");
 $("#add-proxy").onclick = () => editProxy();
 $("#save-proxy").onclick = saveProxy;
 $("#setup-base-url").textContent = location.origin;
-$("#refresh-metrics").onclick = loadMetrics;
-$("#refresh-history").onclick = loadHistory;
+$("#titlebar-base-url").textContent = location.origin;
+$("#copy-base-url").onclick = async () => {
+  try {
+    await copyText(location.origin);
+    toast("ANTHROPIC_BASE_URL copied");
+  } catch (error) {
+    toast(error.message, true);
+  }
+};
+
+$("#refresh-metrics").onclick = () => trackLoading("metrics", loadMetrics());
+$("#refresh-history").onclick = () => trackLoading("history", loadHistory());
+$("#titlebar-copy-script").onclick = () => $("#copy-script").click();
 $("#copy-script").onclick = async () => {
   try {
     await copyText($("#endpoint-script").textContent);
@@ -1228,8 +1299,10 @@ function currentPage() {
   if (location.pathname === "/proxies") return "proxies";
   return "accounts";
 }
+if (currentPage() !== "proxies") loadProxies();
 showPage(currentPage());
-Promise.all([loadProxies(), loadAccounts()]);
+if (currentPage() !== "accounts") loadAccounts();
+
 window.addEventListener("popstate", () => showPage(currentPage()));
 setInterval(() => {
   if (
