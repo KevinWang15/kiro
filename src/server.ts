@@ -271,6 +271,10 @@ export function createServerContext(database: AppDatabase): ServerContext {
           },
         },
       });
+      // A client may close an SSE response after headers have been flushed.
+      // The pool returns cancellation metadata; there is no response left to
+      // send it to, and sending JSON here would write the headers a second time.
+      if (abort.signal.aborted || res.destroyed || res.writableEnded) return;
       if (result.streamed) {
         res.end();
         return;

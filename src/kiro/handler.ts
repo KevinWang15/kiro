@@ -33,6 +33,7 @@ import { calculateClaudeCost } from "../usage/pricing.ts";
 import { getKiroRuntimeHost } from "./constants.ts";
 import { config } from "../config.ts";
 import { isExternalIdpAccount } from "../accounts/credential-utils.ts";
+import { createToolNameMap } from "./tool-names.ts";
 
 // ============================================================================
 // Constants
@@ -396,7 +397,11 @@ export default class KiroApiProviderHandler {
     return request;
   }
 
-  private decodeEvents(responseBody: Buffer | string): KiroEvent[] {
+  private decodeEvents(
+    responseBody: Buffer | string,
+    requestBody: MessagesRequest,
+  ): KiroEvent[] {
+    const toolNames = createToolNameMap(requestBody);
     const decoder = new EventStreamDecoder();
 
     if (Buffer.isBuffer(responseBody)) {
@@ -409,7 +414,8 @@ export default class KiroApiProviderHandler {
     const events: KiroEvent[] = [];
 
     for (const frame of frames) {
-      const event = parseEventPayload(frame.payload, frame.headers);
+      const parsed = parseEventPayload(frame.payload, frame.headers);
+      const event = parsed && toolNames.restore(parsed);
       if (event) events.push(event);
     }
 
@@ -703,6 +709,7 @@ export default class KiroApiProviderHandler {
     modifiedRequestBody: KiroRequest,
     sink: KiroStreamSink,
   ): Promise<KiroStreamResult> {
+    const toolNames = createToolNameMap(requestBody);
     const decoder = new EventStreamDecoder();
     const thinkingEnabled = isThinkingEnabled(requestBody.thinking);
     const estimatedInputTokens = estimateInputTokens(
@@ -745,7 +752,8 @@ export default class KiroApiProviderHandler {
           break;
         }
 
-        const event = parseEventPayload(frame.payload, frame.headers);
+        const parsed = parseEventPayload(frame.payload, frame.headers);
+        const event = parsed && toolNames.restore(parsed);
         if (!event) continue;
         if (isKiroFailureEvent(event)) {
           throw new Error(getKiroFailureMessage(event));
@@ -849,7 +857,7 @@ export default class KiroApiProviderHandler {
       return { body: parsedBody };
     }
 
-    const events = this.decodeEvents(responseBody);
+    const events = this.decodeEvents(responseBody, requestBody);
     const analysis = await this.analyzeEvents(
       events,
       requestBody,

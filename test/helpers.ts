@@ -23,7 +23,7 @@ function stringHeader(name: string, value: string): Buffer {
   return header;
 }
 
-function eventFrame(
+export function eventFrame(
   payload: unknown,
   headers: Array<{ name: string; value: string }> = [],
 ): Buffer {

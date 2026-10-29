@@ -58,6 +58,13 @@ function extractTextFromContent(content: string | unknown[]): string {
       const block = item as Record<string, unknown>;
       if (block.type === "text" && typeof block.text === "string") {
         texts.push(block.text);
+      } else if (
+        block.type === "tool_reference" &&
+        typeof block.tool_name === "string"
+      ) {
+        texts.push(
+          JSON.stringify({ type: "tool_reference", tool_name: block.tool_name }),
+        );
       } else if (block.type === "tool_use") {
         if (typeof block.name === "string") texts.push(block.name);
         if (block.input) texts.push(JSON.stringify(block.input));
@@ -65,12 +72,7 @@ function extractTextFromContent(content: string | unknown[]): string {
         if (typeof block.content === "string") {
           texts.push(block.content);
         } else if (Array.isArray(block.content)) {
-          for (const sub of block.content) {
-            if (typeof sub === "object" && sub !== null) {
-              const subBlock = sub as Record<string, unknown>;
-              if (typeof subBlock.text === "string") texts.push(subBlock.text);
-            }
-          }
+          texts.push(extractTextFromContent(block.content));
         }
       }
     }
