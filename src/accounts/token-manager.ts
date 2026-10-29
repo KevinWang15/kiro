@@ -1,11 +1,11 @@
 import axios from "axios";
-import { buildAgentFromProxy } from "../proxy.js";
-import { config } from "../config.js";
-import { getKiroRuntimeRegion } from "../kiro/constants.js";
-import type { AccountRepository } from "./repository.js";
-import type { ProxyRepository } from "./proxies.js";
-import type { AccountRecord, KiroCredentials, ProxyRecord } from "./types.js";
-import { parseCredentials } from "./types.js";
+import { buildAgentFromProxy } from "../proxy.ts";
+import { config } from "../config.ts";
+import { getKiroRuntimeRegion } from "../kiro/constants.ts";
+import type { AccountRepository } from "./repository.ts";
+import type { ProxyRepository } from "./proxies.ts";
+import type { AccountRecord, KiroCredentials, ProxyRecord } from "./types.ts";
+import { parseCredentials } from "./types.ts";
 import {
   firstNonEmptyString,
   inferMicrosoftScopes,
@@ -13,7 +13,7 @@ import {
   parseJwtPayload,
   isExternalIdpAccount,
   isSocialLoginAccount,
-} from "./credential-utils.js";
+} from "./credential-utils.ts";
 
 export interface KiroRefreshedCredentials {
   accessToken: string;

@@ -1,6 +1,6 @@
-import type { AppDatabase } from "../db.js";
-import { testProxyConnectivity } from "../proxy.js";
-import type { ProxyRecord } from "./types.js";
+import type { AppDatabase } from "../db.ts";
+import { testProxyConnectivity } from "../proxy.ts";
+import type { ProxyRecord } from "./types.ts";
 
 export class ProxyRepository {
   constructor(private readonly database: AppDatabase) {}

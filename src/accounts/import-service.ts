@@ -1,8 +1,8 @@
-import { toKiroCanonicalJson } from "./credentials.js";
-import type { AccountRepository } from "./repository.js";
-import type { ProxyRepository } from "./proxies.js";
-import type { TokenManager } from "./token-manager.js";
-import type { KiroCredentials, ProxyRecord } from "./types.js";
+import { toKiroCanonicalJson } from "./credentials.ts";
+import type { AccountRepository } from "./repository.ts";
+import type { ProxyRepository } from "./proxies.ts";
+import type { TokenManager } from "./token-manager.ts";
+import type { KiroCredentials, ProxyRecord } from "./types.ts";
 
 export type KiroBulkProxyMode = "none" | "random_working";
 

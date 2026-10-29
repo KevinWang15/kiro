@@ -1,6 +1,6 @@
-import { AppDatabase } from "./db.js";
-import { config } from "./config.js";
-import { createServerContext } from "./server.js";
+import { AppDatabase } from "./db.ts";
+import { config } from "./config.ts";
+import { createServerContext } from "./server.ts";
 
 const TRANSIENT_NETWORK_ERRORS = new Set([
   "ECONNRESET",

@@ -2,9 +2,9 @@ import axios from "axios";
 import { v4 as uuidv4 } from "uuid";
 import * as crypto from "node:crypto";
 import * as os from "node:os";
-import { buildAgentFromProxy } from "../proxy.js";
-import { getKiroRuntimeBaseUrl, getKiroRuntimeHost } from "./constants.js";
-import type { McpRequest, McpResponse, WebSearchResults } from "./websearch.js";
+import { buildAgentFromProxy } from "../proxy.ts";
+import { getKiroRuntimeBaseUrl, getKiroRuntimeHost } from "./constants.ts";
+import type { McpRequest, McpResponse, WebSearchResults } from "./websearch.ts";
 
 export interface McpShimConfig {
   region?: string;

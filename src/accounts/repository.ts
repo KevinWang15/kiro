@@ -1,6 +1,6 @@
-import type { AppDatabase } from "../db.js";
-import type { AccountRecord, KiroCredentials, UsageTotals } from "./types.js";
-import { maskToken, parseStatusInfo } from "./types.js";
+import type { AppDatabase } from "../db.ts";
+import type { AccountRecord, KiroCredentials, UsageTotals } from "./types.ts";
+import { maskToken, parseStatusInfo } from "./types.ts";
 
 export interface NewAccount {
   credentials: KiroCredentials;

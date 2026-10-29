@@ -9,7 +9,7 @@
  */
 
 import { v4 as uuidv4 } from "uuid";
-import { ToolResult, HistoryMessage } from "./types.js";
+import { type ToolResult, type HistoryMessage } from "./types.ts";
 
 const KIRO_PREMIUM_USAGE_LIMIT_THRESHOLD = 600;
 

@@ -9,14 +9,14 @@
  */
 
 import { v4 as uuidv4 } from "uuid";
-import { BlockState, KiroEvent, SseEvent, ToolUseEvent } from "./types.js";
+import { type BlockState, type KiroEvent, type SseEvent, type ToolUseEvent } from "./types.ts";
 import {
   findCharBoundary,
   findRealThinkingEndTag,
   findRealThinkingEndTagAtBufferEnd,
   findRealThinkingStartTag,
-} from "./utils.js";
-import { calculateTotalContextTokens, estimateTokens } from "./token.js";
+} from "./utils.ts";
+import { calculateTotalContextTokens, estimateTokens } from "./token.ts";
 
 // ============================================================================
 // SSE State Manager

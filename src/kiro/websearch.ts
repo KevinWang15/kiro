@@ -13,10 +13,10 @@
  */
 
 import { v4 as uuidv4 } from "uuid";
-import { MessagesRequest, SseEvent } from "./types.js";
-import { sseEventToString } from "./stream.js";
-import { estimateInputTokens } from "./token.js";
-import { callWebSearchMcpWithConfig, McpShimConfig } from "./mcp-shim.js";
+import { type MessagesRequest, type SseEvent } from "./types.ts";
+import { sseEventToString } from "./stream.ts";
+import { estimateInputTokens } from "./token.ts";
+import { callWebSearchMcpWithConfig, type McpShimConfig } from "./mcp-shim.ts";
 
 // ============================================================================
 // Types

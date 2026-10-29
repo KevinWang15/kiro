@@ -1,4 +1,4 @@
-import { isExternalIdpAccount } from "../accounts/credential-utils.js";
+import { isExternalIdpAccount } from "../accounts/credential-utils.ts";
 
 export const KIRO_RUNTIME_REGION = "us-east-1";
 

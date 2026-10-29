@@ -1,38 +1,38 @@
 import { v4 as uuidv4 } from "uuid";
 import * as crypto from "crypto";
 import * as os from "os";
-import type { ProviderExtraConfig } from "./provider.js";
+import type { ProviderExtraConfig } from "./provider.ts";
 import {
   isThinkingEnabled,
-  KiroEvent,
-  KiroRequest,
-  MessagesRequest,
-  SseEvent,
-} from "./types.js";
-import { EventStreamDecoder, parseEventPayload } from "./parser.js";
-import { convertRequest, overrideThinkingFromModelName } from "./converter.js";
+  type KiroEvent,
+  type KiroRequest,
+  type MessagesRequest,
+  type SseEvent,
+} from "./types.ts";
+import { EventStreamDecoder, parseEventPayload } from "./parser.ts";
+import { convertRequest, overrideThinkingFromModelName } from "./converter.ts";
 import {
   calculateKiroThinkingTokenSimulation,
   calculateTotalContextTokens,
   estimateInputTokens,
   estimateTokens,
-} from "./token.js";
+} from "./token.ts";
 import {
   CacheSimulator,
   InMemoryCacheStore,
   SystemClock,
   isPreferentialKiroCacheEnabled,
-} from "./cache-simulation.js";
+} from "./cache-simulation.ts";
 import {
   BufferedStreamContext,
   sseEventToString,
   StreamContext,
-} from "./stream.js";
-import { getConversationId } from "./utils.js";
-import { calculateClaudeCost } from "../usage/pricing.js";
-import { getKiroRuntimeHost } from "./constants.js";
-import { config } from "../config.js";
-import { isExternalIdpAccount } from "../accounts/credential-utils.js";
+} from "./stream.ts";
+import { getConversationId } from "./utils.ts";
+import { calculateClaudeCost } from "../usage/pricing.ts";
+import { getKiroRuntimeHost } from "./constants.ts";
+import { config } from "../config.ts";
+import { isExternalIdpAccount } from "../accounts/credential-utils.ts";
 
 // ============================================================================
 // Constants

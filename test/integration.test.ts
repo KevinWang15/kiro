@@ -1,11 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import http from "node:http";
-import { AddressInfo } from "node:net";
-import { AppDatabase } from "../src/db.js";
-import { createServerContext } from "../src/server.js";
-import { config } from "../src/config.js";
-import { successfulKiroStream } from "./helpers.js";
+import { type AddressInfo } from "node:net";
+import { AppDatabase } from "../src/db.ts";
+import { createServerContext } from "../src/server.ts";
+import { config } from "../src/config.ts";
+import { successfulKiroStream } from "./helpers.ts";
 
 async function listen(server: http.Server): Promise<string> {
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
