@@ -123,6 +123,7 @@ function showPage(name) {
   $$("[data-nav]").forEach((a) =>
     a.classList.toggle("active", a.dataset.nav === name),
   );
+  if (name === "metrics" || name === "history") syncRangeFromUrl(name);
   if (name === "accounts") trackLoading("accounts", loadAccounts());
   if (name === "metrics") trackLoading("metrics", loadMetrics());
   if (name === "history") trackLoading("history", loadHistory());
@@ -132,8 +133,15 @@ function showPage(name) {
 
 // Client-side navigation: switching views no longer reloads the document,
 // so the titlebar, rail and already-fetched data stay on screen.
+// Rail links point at bare paths; reuse the range last shown on that page.
+const lastRangeSearch = {};
 function navigate(path) {
-  if (location.pathname !== path) history.pushState({}, "", path);
+  const url = new URL(path, location.origin);
+  const page = pageForPath(url.pathname);
+  if (!url.search && lastRangeSearch[page]) url.search = lastRangeSearch[page];
+  const target = url.pathname + url.search;
+  if (location.pathname + location.search !== target)
+    history.pushState({}, "", target);
   showPage(currentPage());
 }
 document.addEventListener("click", (event) => {
@@ -763,7 +771,7 @@ function createTimeRangePicker(root, { stateKey, onChange }) {
     <button class="button time-range-button" id="${id}-button" aria-haspopup="dialog" aria-expanded="false"><i data-lucide="calendar"></i><span id="${id}-label">${state[stateKey].label}</span><i data-lucide="chevron-down"></i></button>
     <div class="time-range-popover hidden" id="${id}-popover" role="dialog" aria-label="Select time range">
       <div class="time-range-tabs" role="tablist"><button class="active" data-range-tab="quick" role="tab" aria-selected="true">Quick ranges</button><button data-range-tab="absolute" role="tab" aria-selected="false">Custom range</button></div>
-      <div id="${id}-quick" class="time-range-panel"><button data-quick-ms="900000">Last 15 minutes</button><button data-quick-ms="3600000">Last hour</button><button data-quick-ms="86400000">Last 24 hours</button><button data-quick-ms="259200000">Last 3 days</button><button data-quick-ms="604800000">Last 7 days</button><button data-quick-ms="2592000000">Last 30 days</button></div>
+      <div id="${id}-quick" class="time-range-panel">${QUICK_RANGES.map((range) => `<button data-quick-ms="${range.ms}">${range.label}</button>`).join("")}</div>
       <div id="${id}-absolute" class="time-range-panel hidden">
         <label>From<div class="datetime-inputs"><input id="${id}-from-date" type="date"><input id="${id}-from-time" type="time"></div></label>
         <label>To<div class="datetime-inputs"><input id="${id}-to-date" type="date"><input id="${id}-to-time" type="time"></div></label>
@@ -880,6 +888,7 @@ function updateRangeLabel(root, label) {
 function handleMetricsRangeChange(range) {
   state.metricsRange = range;
   updateRangeLabel($("#metrics-time-range"), range.label);
+  pushRange("metrics", range);
   loadMetrics();
 }
 
@@ -888,7 +897,85 @@ function handleHistoryRangeChange(range) {
   state.historyPage = 1;
   state.historyExpanded.clear();
   updateRangeLabel($("#history-time-range"), range.label);
+  pushRange("history", range);
   loadHistory();
+}
+
+// ---------- Range <-> URL ----------
+// Quick ranges are stored as ?range=1h (relative to now when loaded); custom
+// and drag-selected ranges as ?from=<ISO>&to=<ISO>. The default (last 24 hours)
+// keeps the bare path, so plain /metrics and /history stay unchanged.
+const QUICK_RANGES = [
+  { key: "15m", ms: 15 * 60 * 1000, label: "Last 15 minutes" },
+  { key: "1h", ms: 60 * 60 * 1000, label: "Last hour" },
+  { key: "24h", ms: 24 * 60 * 60 * 1000, label: "Last 24 hours" },
+  { key: "3d", ms: 3 * 24 * 60 * 60 * 1000, label: "Last 3 days" },
+  { key: "7d", ms: 7 * 24 * 60 * 60 * 1000, label: "Last 7 days" },
+  { key: "30d", ms: 30 * 24 * 60 * 60 * 1000, label: "Last 30 days" },
+];
+const DEFAULT_RANGE_KEY = "24h";
+
+function quickRange(quick, now = new Date()) {
+  return {
+    from: new Date(now.getTime() - quick.ms),
+    to: now,
+    label: quick.label,
+    isRolling: true,
+  };
+}
+
+function rangeToSearch(range) {
+  if (range.isRolling) {
+    const ms = range.to.getTime() - range.from.getTime();
+    const quick = QUICK_RANGES.find((candidate) => candidate.ms === ms);
+    if (quick) return quick.key === DEFAULT_RANGE_KEY ? "" : `?range=${quick.key}`;
+  }
+  return `?from=${range.from.toISOString()}&to=${range.to.toISOString()}`;
+}
+
+function rangeFromSearch(search) {
+  const params = new URLSearchParams(search);
+  const key = params.get("range");
+  if (key) {
+    const quick = QUICK_RANGES.find((candidate) => candidate.key === key);
+    return quick ? quickRange(quick) : null;
+  }
+  const from = new Date(params.get("from") || "");
+  const to = new Date(params.get("to") || "");
+  if (!Number.isFinite(from.getTime()) || !Number.isFinite(to.getTime()) || from >= to)
+    return null;
+  return {
+    from,
+    to,
+    label: `${displayDateTime(from)} - ${displayDateTime(to)}`,
+    isRolling: false,
+  };
+}
+
+function pushRange(page, range) {
+  const search = rangeToSearch(range);
+  lastRangeSearch[page] = search;
+  if (location.search !== search)
+    history.pushState({}, "", location.pathname + search);
+}
+
+// Apply the URL's range to the page state (initial load, back/forward, rail).
+function syncRangeFromUrl(page) {
+  const stateKey = `${page}Range`;
+  const parsed = location.search ? rangeFromSearch(location.search) : null;
+  if (location.search && !parsed)
+    history.replaceState({}, "", location.pathname);
+  const range =
+    parsed ||
+    quickRange(QUICK_RANGES.find((quick) => quick.key === DEFAULT_RANGE_KEY));
+  const changed = rangeToSearch(range) !== rangeToSearch(state[stateKey]);
+  state[stateKey] = range;
+  lastRangeSearch[page] = location.search;
+  updateRangeLabel($(`#${page}-time-range`), range.label);
+  if (page === "history" && changed) {
+    state.historyPage = 1;
+    state.historyExpanded.clear();
+  }
 }
 
 function resolveRollingRange(range, now = new Date()) {
@@ -1293,11 +1380,14 @@ createTimeRangePicker($("#history-time-range"), {
   stateKey: "historyRange",
   onChange: handleHistoryRangeChange,
 });
-function currentPage() {
-  if (location.pathname === "/metrics") return "metrics";
-  if (location.pathname === "/history") return "history";
-  if (location.pathname === "/proxies") return "proxies";
+function pageForPath(pathname) {
+  if (pathname === "/metrics") return "metrics";
+  if (pathname === "/history") return "history";
+  if (pathname === "/proxies") return "proxies";
   return "accounts";
+}
+function currentPage() {
+  return pageForPath(location.pathname);
 }
 if (currentPage() !== "proxies") loadProxies();
 showPage(currentPage());
