@@ -51,6 +51,64 @@ const EDIT_TOOL_DESCRIPTION_SUFFIX = `- IMPORTANT: If the \`new_string\` content
 
 const SYSTEM_CHUNKED_POLICY = `When the Write or Edit tool has content size limits, always comply silently. Never suggest bypassing these limits via alternative tools. Never ask the user whether to switch approaches. Complete all chunked operations without commentary.`;
 
+// Claude Code sends mid-conversation context (environment, the deferred tool
+// list, token budget updates) as role "system" entries in messages[]. Kiro
+// only has user/assistant turns, so fold each one into an adjacent user turn
+// as a <system-reminder> text block: appended to the user message directly
+// before it, otherwise prepended to the next user message. This keeps each
+// reminder in the same turn and position the client put it in.
+function foldSystemMessages(messages: AnthropicMessage[]): AnthropicMessage[] {
+  const toBlocks = (content: string | ContentBlock[]): ContentBlock[] =>
+    typeof content === "string" ? [{ type: "text", text: content }] : content;
+  const reminder = (message: AnthropicMessage): ContentBlock | null => {
+    const text = toBlocks(message.content)
+      .filter((block) => block.type === "text" && block.text)
+      .map((block) => block.text)
+      .join("\n");
+    return text
+      ? { type: "text", text: `<system-reminder>\n${text}\n</system-reminder>` }
+      : null;
+  };
+
+  const result: AnthropicMessage[] = [];
+  let pending: ContentBlock[] = [];
+  for (const message of messages) {
+    if (message.role === "system") {
+      const block = reminder(message);
+      if (!block) continue;
+      const previous = result.at(-1);
+      if (previous?.role === "user" && !pending.length) {
+        result[result.length - 1] = {
+          ...previous,
+          content: [...toBlocks(previous.content), block],
+        };
+      } else {
+        pending.push(block);
+      }
+      continue;
+    }
+    if (message.role === "user" && pending.length) {
+      result.push({ ...message, content: [...pending, ...toBlocks(message.content)] });
+      pending = [];
+      continue;
+    }
+    result.push(message);
+  }
+  // Only possible when no user message follows (e.g. after a trailing
+  // assistant prefill). Attach to the last user message so the current turn
+  // stays the same; with no user message at all, keep it as its own turn.
+  if (pending.length) {
+    const lastUser = result.findLastIndex((message) => message.role === "user");
+    if (lastUser >= 0) {
+      const target = result[lastUser];
+      result[lastUser] = { ...target, content: [...toBlocks(target.content), ...pending] };
+    } else {
+      result.push({ role: "user", content: pending });
+    }
+  }
+  return result;
+}
+
 // Kiro has no tool_reference block; see tool-references.ts.
 function isToolReference(block: ContentBlock): boolean {
   return block.type === "tool_reference" && typeof block.tool_name === "string";
@@ -729,7 +787,7 @@ export function convertRequest(
   const toolsByName = new Map((req.tools || []).map((tool) => [tool.name, tool]));
   req = {
     ...req,
-    messages: req.messages.map((message) => ({
+    messages: foldSystemMessages(req.messages).map((message) => ({
       ...message,
       content: preserveToolReferences(
         message.content,
