@@ -98,8 +98,8 @@ function convertTool(
     ? anthropicTool.description
     : anthropicTool.name;
 
-  // A hash alone hides name-based distinctions (e.g. two MCP tools with the
-  // same description). Preserve the client name while Kiro uses the alias.
+  // A truncated alias can hide name-based distinctions (e.g. two MCP tools with
+  // the same description). Preserve the client name while Kiro uses the alias.
   if (toWireName(anthropicTool.name) !== anthropicTool.name) {
     description = `Client tool name: ${anthropicTool.name}\n${description}`;
   }

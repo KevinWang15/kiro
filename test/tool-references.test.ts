@@ -35,7 +35,7 @@ test("ToolSearch results preserve references and use the same wire names as disc
   const lines = text.split("\n");
   assert.deepEqual(JSON.parse(lines[0]), { type: "tool_reference", tool_name: "WebFetch" });
   assert.deepEqual(JSON.parse(lines[1]), { type: "tool_reference", tool_name: context.tools![2].toolSpecification.name });
-  assert.match(JSON.parse(lines[1]).tool_name, /^[a-zA-Z][a-zA-Z0-9_]{0,63}$/);
+  assert.match(JSON.parse(lines[1]).tool_name, /^[A-Za-z0-9_-]{1,64}$/);
   assert.equal(lines[2], "Two tools discovered.");
   assert.deepEqual(context.tools![2].toolSpecification.inputSchema.json, request.tools![2].input_schema);
   assert.deepEqual(request, original);

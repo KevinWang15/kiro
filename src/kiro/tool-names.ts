@@ -1,8 +1,28 @@
 import { createHash } from "node:crypto";
 import type { KiroEvent, KiroRequest, MessagesRequest } from "./types.ts";
 
-// Kiro's tool names are limited to 64 characters. Anthropic/MCP names can be
-// longer. Keep the translation local to each request, including resumed history.
+// Kiro accepts tool names of 1-64 characters from [A-Za-z0-9_-] (verified
+// against the live API; ':' '/' ' ' and 65+ chars are rejected). Claude Code
+// already sanitizes MCP names to that charset, so length is the usual trigger.
+const KIRO_TOOL_NAME = /^[A-Za-z0-9_-]{1,64}$/;
+const ALIAS_HASH_LENGTH = 8;
+
+export function isValidKiroToolName(name: string): boolean {
+  return KIRO_TOOL_NAME.test(name);
+}
+
+// Keep as much of the original name as fits so the model can still read it,
+// and append a short hash so names sharing a long prefix stay distinct.
+function readableAlias(name: string, attempt: number): string {
+  const input = attempt === 0 ? name : `${name}\0${attempt}`;
+  const hash = createHash("sha256").update(input).digest("hex").slice(0, ALIAS_HASH_LENGTH);
+  const stem = name
+    .replace(/[^A-Za-z0-9_-]/g, "_")
+    .slice(0, 64 - ALIAS_HASH_LENGTH - 1);
+  return `${stem}_${hash}`;
+}
+
+// Keep the translation local to each request, including resumed history.
 export function createToolNameMap(request: MessagesRequest) {
   const names = new Set<string>();
   for (const tool of request.tools || []) {
@@ -16,17 +36,17 @@ export function createToolNameMap(request: MessagesRequest) {
     }
   }
 
-  const valid = (name: string) => /^[a-zA-Z][a-zA-Z0-9_]{0,63}$/.test(name);
-  const occupied = new Set([...names].filter(valid));
+  const occupied = new Set([...names].filter(isValidKiroToolName));
   const toWire = new Map<string, string>();
   const fromWire = new Map<string, string>();
   for (const name of [...names].sort()) {
-    if (valid(name)) continue;
+    if (isValidKiroToolName(name)) continue;
     let alias: string;
     let attempt = 0;
+    // Retries only happen on a hash collision with another declared name, so
+    // in practice every name maps to its attempt-0 alias on every turn.
     do {
-      const input = attempt === 0 ? name : `${name}\0${attempt}`;
-      alias = `kiro_${createHash("sha256").update(input).digest("hex").slice(0, 48)}`;
+      alias = readableAlias(name, attempt);
       attempt++;
     } while (occupied.has(alias));
     occupied.add(alias);

@@ -35,7 +35,11 @@ test("tool names preserve short names and safely distinguish long MCP names", ()
   const converted = convertRequest(request, { isPremium: true });
   const spec = converted.conversationState.currentMessage.userInputMessage
     .userInputMessageContext!.tools![0].toolSpecification;
-  assert.match(spec.name, /^[a-zA-Z][a-zA-Z0-9_]{0,63}$/);
+  assert.match(spec.name, /^[A-Za-z0-9_-]{1,64}$/);
+  // Readable: the alias keeps the original prefix plus a short hash.
+  assert.equal(spec.name.length, 64);
+  assert.ok(spec.name.startsWith(longName.slice(0, 55)));
+  assert.match(spec.name, /_[0-9a-f]{8}$/);
   assert.notEqual(spec.name, wireName(requestFor(`${longName}_other`)));
   assert.equal(spec.name, wireName(request));
   assert.ok(spec.description.trim());
@@ -43,8 +47,21 @@ test("tool names preserve short names and safely distinguish long MCP names", ()
   assert.deepEqual(request, original);
 });
 
+test("only names Kiro rejects are aliased", () => {
+  // Kiro accepts [A-Za-z0-9_-]{1,64}; hyphenated MCP names pass through.
+  for (const name of ["mcp__chrome-devtools__take_screenshot", "-ab", "1ab", "x", "a".repeat(64)])
+    assert.equal(wireName(requestFor(name)), name);
+  assert.notEqual(wireName(requestFor("a".repeat(65))), "a".repeat(65));
+  for (const name of ["a:b", "a/b", "a b"]) {
+    const alias = wireName(requestFor(name));
+    assert.notEqual(alias, name);
+    assert.match(alias, /^[A-Za-z0-9_-]{1,64}$/);
+  }
+});
+
 test("aliases cannot collide with a valid tool name declared by the client", () => {
-  const alias = `kiro_${createHash("sha256").update(longName).digest("hex").slice(0, 48)}`;
+  const hash = createHash("sha256").update(longName).digest("hex").slice(0, 8);
+  const alias = `${longName.slice(0, 55)}_${hash}`;
   const request = requestFor(longName);
   request.tools!.push({ name: alias, description: "An independent tool" });
   const tools = convertRequest(request).conversationState.currentMessage
