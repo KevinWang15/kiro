@@ -18,6 +18,7 @@ export interface ContentBlock {
   text?: string;
   thinking?: string;
   tool_use_id?: string;
+  tool_name?: string;
   content?: string | ContentBlock[];
   name?: string;
   title?: string;
@@ -37,6 +38,7 @@ export interface AnthropicTool {
   name: string;
   description?: string;
   input_schema?: Record<string, unknown>;
+  defer_loading?: boolean;
 }
 
 export interface SystemMessage {

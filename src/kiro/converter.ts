@@ -9,6 +9,7 @@
  */
 
 import { v4 as uuidv4 } from "uuid";
+import { createToolNameMap } from "./tool-names.js";
 import {
   MessagesRequest,
   AnthropicMessage,
@@ -48,6 +49,35 @@ const EDIT_TOOL_DESCRIPTION_SUFFIX = `- IMPORTANT: If the \`new_string\` content
 
 const SYSTEM_CHUNKED_POLICY = `When the Write or Edit tool has content size limits, always comply silently. Never suggest bypassing these limits via alternative tools. Never ask the user whether to switch approaches. Complete all chunked operations without commentary.`;
 
+// Claude Code sends discovered tools in tools[] and references to them in the
+// ToolSearch result. Kiro receives the definitions through convertTools(), but
+// has no tool_reference content block, so preserve references as text rather
+// than dropping the search result. Use the same names as the wire definitions.
+function preserveToolReferences(
+  content: string | ContentBlock[],
+  toWireName: (name: string) => string,
+): string | ContentBlock[] {
+  if (!Array.isArray(content)) return content;
+  return content.map((block) => {
+    if (block.type === "tool_reference" && typeof block.tool_name === "string") {
+      return {
+        type: "text",
+        text: JSON.stringify({
+          type: "tool_reference",
+          tool_name: toWireName(block.tool_name),
+        }),
+      };
+    }
+    if (block.type === "tool_result" && Array.isArray(block.content)) {
+      return {
+        ...block,
+        content: preserveToolReferences(block.content, toWireName),
+      };
+    }
+    return block;
+  });
+}
+
 // ============================================================================
 // Tool Conversion
 // ============================================================================
@@ -55,12 +85,24 @@ const SYSTEM_CHUNKED_POLICY = `When the Write or Edit tool has content size limi
 /**
  * Convert Anthropic tool to Kiro tool format
  */
-function convertTool(anthropicTool: {
-  name: string;
-  description?: string;
-  input_schema?: Record<string, unknown>;
-}): KiroTool {
-  let description = anthropicTool.description || "";
+function convertTool(
+  anthropicTool: {
+    name: string;
+    description?: string;
+    input_schema?: Record<string, unknown>;
+  },
+  toWireName: (name: string) => string,
+): KiroTool {
+  // Kiro rejects an empty description even though Anthropic allows omission.
+  let description = anthropicTool.description?.trim()
+    ? anthropicTool.description
+    : anthropicTool.name;
+
+  // A hash alone hides name-based distinctions (e.g. two MCP tools with the
+  // same description). Preserve the client name while Kiro uses the alias.
+  if (toWireName(anthropicTool.name) !== anthropicTool.name) {
+    description = `Client tool name: ${anthropicTool.name}\n${description}`;
+  }
 
   // Append custom descriptions for Write/Edit tools
   const suffix =
@@ -101,6 +143,7 @@ function convertTool(anthropicTool: {
  * Convert tools list
  */
 function convertTools(
+  toWireName: (name: string) => string,
   tools?: Array<{
     name: string;
     description?: string;
@@ -108,28 +151,30 @@ function convertTools(
   }>,
 ): KiroTool[] {
   if (!tools) return [];
-  return tools.map(convertTool);
+  return tools.map((tool) => convertTool(tool, toWireName));
 }
 
 /**
  * Create a placeholder tool for tools used in history but not in current tools list
  */
-function createPlaceholderTool(name: string): KiroTool {
-  return {
-    toolSpecification: {
+function createPlaceholderTool(
+  name: string,
+  toWireName: (name: string) => string,
+): KiroTool {
+  return convertTool(
+    {
       name,
       description: "Tool used in conversation history",
-      inputSchema: {
-        json: {
-          $schema: "http://json-schema.org/draft-07/schema#",
-          type: "object",
-          properties: {},
-          required: [],
-          additionalProperties: true,
-        },
+      input_schema: {
+        $schema: "http://json-schema.org/draft-07/schema#",
+        type: "object",
+        properties: {},
+        required: [],
+        additionalProperties: true,
       },
     },
-  };
+    toWireName,
+  );
 }
 
 // ============================================================================
@@ -668,6 +713,14 @@ export function convertRequest(
     supportedExperimentalModels?: readonly string[] | null;
   },
 ): KiroRequest {
+  const toolNames = createToolNameMap(req);
+  req = {
+    ...req,
+    messages: req.messages.map((message) => ({
+      ...message,
+      content: preserveToolReferences(message.content, toolNames.toWireName),
+    })),
+  };
   // 1. Map model
   const mappedModelId = mapModel(
     req.model,
@@ -715,7 +768,7 @@ export function convertRequest(
     processUserMessages(req.messages.slice(currentStart, currentEnd));
 
   // 6. Convert tools
-  let tools = convertTools(req.tools);
+  let tools = convertTools(toolNames.toWireName, req.tools);
 
   // 7. Build history
   let history = buildHistory(req, req.messages.slice(0, currentStart), modelId);
@@ -751,7 +804,7 @@ export function convertRequest(
   );
   for (const [lowerName, originalName] of Array.from(historyToolNames)) {
     if (!existingToolNames.has(lowerName)) {
-      tools.push(createPlaceholderTool(originalName));
+      tools.push(createPlaceholderTool(originalName, toolNames.toWireName));
     }
   }
 
@@ -793,7 +846,9 @@ export function convertRequest(
     history: history.length > 0 ? history : undefined,
   };
 
-  return { conversationState };
+  const result = { conversationState };
+  toolNames.apply(result);
+  return result;
 }
 
 /**
