@@ -6,7 +6,7 @@ import {
   calculateTotalContextTokens,
   estimateTokens,
 } from "../src/kiro/token.ts";
-import { extractSessionId, mapModel } from "../src/kiro/utils.ts";
+import { extractSessionId, mapModel, splitThinking } from "../src/kiro/utils.ts";
 import {
   CacheSimulator,
   InMemoryCacheStore,
@@ -16,7 +16,7 @@ import {
 } from "../src/kiro/cache-simulation.ts";
 import { calculateClaudeCost } from "../src/usage/pricing.ts";
 import KiroApiProviderHandler, { stripBillingHeaderCch } from "../src/kiro/handler.ts";
-import { successfulKiroStream } from "./helpers.ts";
+import { eventFrame, successfulKiroStream } from "./helpers.ts";
 
 const user = (content: any) => ({ role: "user", content });
 const assistant = (content: any) => ({ role: "assistant", content });
@@ -255,4 +255,88 @@ test("session ids are read from both user_id formats", () => {
   assert.equal(extractSessionId(`user_${"a".repeat(64)}_account__session_${id}`), id);
   assert.equal(extractSessionId('{"session_id":"not-a-uuid"}'), null);
   assert.equal(extractSessionId("no session here"), null);
+});
+
+test("splitThinking mirrors the streaming split", () => {
+  assert.deepEqual(splitThinking("<thinking>\nstep one\nstep two\n</thinking>\n\nAnswer: no"), { thinking: "step one\nstep two\n", text: "Answer: no" });
+  assert.deepEqual(splitThinking("plain answer"), { thinking: "", text: "plain answer" });
+  assert.deepEqual(splitThinking("<thinking>\ncut off mid-reasoning"), { thinking: "cut off mid-reasoning", text: "" });
+  // A quoted tag is not a thinking block.
+  assert.equal(splitThinking('Use the "<thinking>" tag like this.').thinking, "");
+});
+
+for (const stream of [false, true]) {
+  test(`thinking comes back as a thinking block (${stream ? "streaming" : "non-streaming"})`, async () => {
+    const reply = "<thinking>\n391 = 17 × 23, so not prime.\n</thinking>\n\nNo, 391 is not prime.";
+    const bytes = Buffer.concat([
+      eventFrame({ content: reply.slice(0, 20) }),
+      eventFrame({ content: reply.slice(20) }),
+      eventFrame({ contextUsagePercentage: 1 }),
+    ]);
+    const request = {
+      model: "claude-sonnet-4-5",
+      stream,
+      thinking: { type: "enabled", budget_tokens: 1024 },
+      messages: [{ role: "user", content: "Is 391 prime?" }],
+    } as MessagesRequest;
+    const handler = new KiroApiProviderHandler(new CacheSimulator(new InMemoryCacheStore(new MockClock(0))));
+    const modified = convertRequest(request);
+    let blocks: Array<{ type: string; text: string }>;
+    if (stream) {
+      let sse = "";
+      async function* chunks() {
+        for (let i = 0; i < bytes.length; i += 9) yield bytes.subarray(i, i + 9);
+      }
+      await handler.streamResponse(chunks(), request, modified, { onChunk: (chunk) => { sse += chunk; } });
+      const events = sse.split("\n").filter((l) => l.startsWith("data: ")).map((l) => JSON.parse(l.slice(6)));
+      blocks = [];
+      for (const e of events) {
+        if (e.type === "content_block_start") blocks[e.index] = { type: e.content_block.type, text: "" };
+        if (e.type === "content_block_delta") blocks[e.index].text += e.delta.thinking ?? e.delta.text ?? "";
+      }
+      blocks = blocks.filter(Boolean);
+    } else {
+      const out = await handler.transformResponseBody(200, bytes, request, modified);
+      blocks = (out.body as any).content.map((c: any) => ({ type: c.type, text: c.thinking ?? c.text }));
+    }
+    assert.deepEqual(blocks, [
+      { type: "thinking", text: "391 = 17 × 23, so not prime.\n" },
+      { type: "text", text: "No, 391 is not prime." },
+    ]);
+  });
+}
+
+test("without thinking requested, tags are left as the model wrote them", async () => {
+  const bytes = Buffer.concat([eventFrame({ content: "<thinking>x</thinking>\n\ny" }), eventFrame({ contextUsagePercentage: 1 })]);
+  const request = { model: "claude-sonnet-4-5", messages: [{ role: "user", content: "hi" }] } as MessagesRequest;
+  const handler = new KiroApiProviderHandler(new CacheSimulator(new InMemoryCacheStore(new MockClock(0))));
+  const out = await handler.transformResponseBody(200, bytes, request, convertRequest(request));
+  assert.deepEqual((out.body as any).content, [{ type: "text", text: "<thinking>x</thinking>\n\ny" }]);
+});
+
+test("thinking tags: punctuation is fine, quoted or fenced mentions are not tags", () => {
+  // Used to fail: "." right before </thinking> was treated as a quote.
+  assert.deepEqual(splitThinking("<thinking>\nso 391 is not prime.</thinking>\n\nNo."), { thinking: "so 391 is not prime.", text: "No." });
+  assert.deepEqual(splitThinking("<thinking>\n(17 × 23)</thinking>\n\nNo."), { thinking: "(17 × 23)", text: "No." });
+  // Mentions, not tags.
+  assert.equal(splitThinking("Use the `<thinking>` tag to reason.").thinking, "");
+  assert.equal(splitThinking('The tag is "<thinking>" in the prompt.').thinking, "");
+  assert.equal(splitThinking("Example:\n```\n<thinking>\nx\n</thinking>\n\n```\nDone.").thinking, "");
+  // A quoted end tag inside the reasoning doesn't end it.
+  assert.deepEqual(splitThinking('<thinking>\nwrite "</thinking>" literally\n</thinking>\n\nOK'), { thinking: 'write "</thinking>" literally\n', text: "OK" });
+});
+
+test("streaming handles punctuation before </thinking> split across chunks", async () => {
+  const reply = "<thinking>\nso 391 is not prime.</thinking>\n\nNo.";
+  const bytes = Buffer.concat([...reply].map((ch) => eventFrame({ content: ch })).concat([eventFrame({ contextUsagePercentage: 1 })]));
+  const request = { model: "claude-sonnet-4-5", stream: true, thinking: { type: "enabled", budget_tokens: 1024 }, messages: [{ role: "user", content: "?" }] } as MessagesRequest;
+  const handler = new KiroApiProviderHandler(new CacheSimulator(new InMemoryCacheStore(new MockClock(0))));
+  let sse = "";
+  async function* chunks() { yield bytes; }
+  await handler.streamResponse(chunks(), request, convertRequest(request), { onChunk: (c) => { sse += c; } });
+  const events = sse.split("\n").filter((l) => l.startsWith("data: ")).map((l) => JSON.parse(l.slice(6)));
+  const thinking = events.filter((e) => e.delta?.type === "thinking_delta").map((e) => e.delta.thinking).join("");
+  const text = events.filter((e) => e.delta?.type === "text_delta").map((e) => e.delta.text).join("");
+  assert.equal(thinking, "so 391 is not prime.");
+  assert.equal(text, "No.");
 });

@@ -20,54 +20,52 @@ import { type ToolResult, type HistoryMessage } from "./types.ts";
  * Characters that wrap tags when used in code/quoted contexts
  * Real thinking tags should NOT be wrapped by these
  */
-const QUOTE_CHARS = new Set([
-  "`",
-  '"',
-  "'",
-  "\\",
-  "#",
-  "!",
-  "@",
-  "$",
-  "%",
-  "^",
-  "&",
-  "*",
-  "(",
-  ")",
-  "-",
-  "_",
-  "=",
-  "+",
-  "[",
-  "]",
-  "{",
-  "}",
-  ";",
-  ":",
-  "<",
-  ">",
-  ",",
-  ".",
-  "?",
-  "/",
-]);
+// A tag counts as quoted (mentioned, not used) when it is wrapped in a
+// matching pair of quotes or backticks, e.g. `<thinking>` or "</thinking>".
+// Ordinary punctuation next to a tag ("prime.</thinking>") does not count.
+const QUOTE_PAIRS: Record<string, string> = { "`": "`", '"': '"', "'": "'", "“": "”", "‘": "’" };
 
-/**
- * Check if character at position is a quote character
- */
-function isQuoteChar(buffer: string, pos: number): boolean {
-  if (pos < 0 || pos >= buffer.length) return false;
-  return QUOTE_CHARS.has(buffer[pos]);
+function isWrappedInQuotes(buffer: string, pos: number, tagLength: number): boolean {
+  const open = buffer[pos - 1];
+  const close = QUOTE_PAIRS[open];
+  return close !== undefined && buffer[pos + tagLength] === close;
+}
+
+// Inside a fenced code block (an odd number of ``` fences before pos).
+function isInsideCodeFence(buffer: string, pos: number): boolean {
+  return ((buffer.slice(0, pos).match(/```/g) || []).length) % 2 === 1;
+}
+
+function isQuotedTag(buffer: string, pos: number, tagLength: number): boolean {
+  return isWrappedInQuotes(buffer, pos, tagLength) || isInsideCodeFence(buffer, pos);
 }
 
 /**
- * Find real thinking start tag (not wrapped in quotes/backticks)
- *
- * Skips tags that are wrapped in quote characters like:
- * - `<thinking>` (code context)
- * - "<thinking>" (string context)
- * - '<thinking>' (string context)
+ * Split a complete Kiro reply into its thinking and answer text, the same way
+ * the streaming path does: one leading <thinking>…</thinking> block (found with
+ * the same tag-detection helpers), one newline after <thinking> dropped, the
+ * blank line after </thinking> dropped. Text before the block stays in the
+ * answer. If the closing tag never arrives, everything after <thinking> is
+ * thinking (the reply was cut off mid-reasoning).
+ */
+export function splitThinking(content: string): { thinking: string; text: string } {
+  const start = findRealThinkingStartTag(content);
+  if (start === null) return { thinking: "", text: content };
+  const before = content.slice(0, start);
+  let rest = content.slice(start + "<thinking>".length);
+  if (rest.startsWith("\n")) rest = rest.slice(1);
+  const end = findRealThinkingEndTag(rest) ?? findRealThinkingEndTagAtBufferEnd(rest);
+  if (end === null) return { thinking: rest, text: before.trim() ? before : "" };
+  const thinking = rest.slice(0, end);
+  let after = rest.slice(end + "</thinking>".length);
+  after = after.replace(/^\n{1,2}/, "");
+  const text = before.trim() ? before + after : after;
+  return { thinking, text };
+}
+
+/**
+ * Find the real <thinking> start tag: the first one not quoted (see
+ * isQuotedTag), e.g. `<thinking>`, "<thinking>" or one inside a code fence.
  */
 export function findRealThinkingStartTag(buffer: string): number | null {
   const TAG = "<thinking>";
@@ -77,12 +75,7 @@ export function findRealThinkingStartTag(buffer: string): number | null {
     const pos = buffer.indexOf(TAG, searchStart);
     if (pos === -1) return null;
 
-    // Check if wrapped by quote characters
-    const hasQuoteBefore = pos > 0 && isQuoteChar(buffer, pos - 1);
-    const hasQuoteAfter = isQuoteChar(buffer, pos + TAG.length);
-
-    // If not wrapped, this is a real tag
-    if (!hasQuoteBefore && !hasQuoteAfter) {
+    if (!isQuotedTag(buffer, pos, TAG.length)) {
       return pos;
     }
 
@@ -92,12 +85,9 @@ export function findRealThinkingStartTag(buffer: string): number | null {
 }
 
 /**
- * Find real thinking end tag
- *
- * Requirements:
- * - Not wrapped in quotes/backticks
- * - Followed by double newline (\n\n) OR
- * - At end of buffer (when followed by only whitespace)
+ * Find the real </thinking> end tag while text is still arriving: not quoted
+ * (see isQuotedTag) and followed by a blank line (\n\n). Returns null until
+ * enough text has arrived to tell.
  */
 export function findRealThinkingEndTag(buffer: string): number | null {
   const TAG = "</thinking>";
@@ -107,11 +97,7 @@ export function findRealThinkingEndTag(buffer: string): number | null {
     const pos = buffer.indexOf(TAG, searchStart);
     if (pos === -1) return null;
 
-    // Check if wrapped by quote characters
-    const hasQuoteBefore = pos > 0 && isQuoteChar(buffer, pos - 1);
-    const hasQuoteAfter = isQuoteChar(buffer, pos + TAG.length);
-
-    if (hasQuoteBefore || hasQuoteAfter) {
+    if (isQuotedTag(buffer, pos, TAG.length)) {
       searchStart = pos + 1;
       continue;
     }
@@ -135,9 +121,8 @@ export function findRealThinkingEndTag(buffer: string): number | null {
 }
 
 /**
- * Find thinking end tag at buffer end (for boundary events)
- *
- * Accepts tags at end of buffer (followed only by whitespace)
+ * Find the real </thinking> end tag once no more text is coming (end of reply,
+ * or a tool call starts): not quoted and followed only by whitespace.
  */
 export function findRealThinkingEndTagAtBufferEnd(
   buffer: string,
@@ -149,10 +134,7 @@ export function findRealThinkingEndTagAtBufferEnd(
     const pos = buffer.indexOf(TAG, searchStart);
     if (pos === -1) return null;
 
-    const hasQuoteBefore = pos > 0 && isQuoteChar(buffer, pos - 1);
-    const hasQuoteAfter = isQuoteChar(buffer, pos + TAG.length);
-
-    if (hasQuoteBefore || hasQuoteAfter) {
+    if (isQuotedTag(buffer, pos, TAG.length)) {
       searchStart = pos + 1;
       continue;
     }

@@ -27,7 +27,7 @@ import {
   sseEventToString,
   StreamContext,
 } from "./stream.ts";
-import { getConversationId } from "./utils.ts";
+import { getConversationId, splitThinking } from "./utils.ts";
 import { calculateClaudeCost } from "../usage/pricing.ts";
 import { getKiroRuntimeHost } from "./constants.ts";
 import { config } from "../config.ts";
@@ -478,9 +478,18 @@ export default class KiroApiProviderHandler {
       stopReason = "tool_use";
     }
 
+    // With thinking on, Kiro puts its reasoning inline as <thinking>…</thinking>.
+    // Return it as a separate thinking block, like the streaming path does,
+    // instead of leaving the tags inside the answer text.
     const content: Array<Record<string, unknown>> = [];
-    if (textContent.trim()) {
-      content.push({ type: "text", text: textContent });
+    const { thinking, text: answerText } = isThinkingEnabled(requestBody.thinking)
+      ? splitThinking(textContent)
+      : { thinking: "", text: textContent };
+    if (thinking) {
+      content.push({ type: "thinking", thinking });
+    }
+    if (answerText.trim()) {
+      content.push({ type: "text", text: answerText });
     }
 
     const totalContextTokens = contextTotalTokens ?? 0;
