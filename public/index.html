@@ -449,10 +449,158 @@
       </div>
     </dialog>
 
-    <dialog id="account-dialog" class="modal wide">
+    <dialog id="new-account-dialog" class="modal wide" aria-labelledby="new-account-title">
       <form method="dialog" class="modal-heading">
         <div>
-          <p class="eyebrow" id="account-dialog-eyebrow">LOCAL CREDENTIAL</p>
+          <p class="eyebrow" id="new-account-step">Step 1 of 2</p>
+          <h2 id="new-account-title">Add a Kiro account</h2>
+        </div>
+        <button class="icon-button" value="cancel" aria-label="Close">
+          <i data-lucide="x"></i>
+        </button>
+      </form>
+      <div class="modal-body">
+        <!-- Step 1: choose how to sign in -->
+        <section id="na-choose" class="na-step">
+          <p class="muted">Sign in once and the adapter keeps the account's token fresh.</p>
+          <div class="method-grid" role="list">
+            <button class="method-card" data-method="kiro" role="listitem">
+              <span class="method-icon"><i data-lucide="log-in"></i></span>
+              <span class="method-text"><strong>Kiro sign-in</strong>
+                <small>Google, GitHub or your organization's sign-in, on Kiro's page.</small></span>
+              <span class="method-tag" data-loopback-tag>This machine only</span>
+            </button>
+            <button class="method-card" data-method="builder-id" role="listitem">
+              <span class="method-icon"><i data-lucide="key-round"></i></span>
+              <span class="method-text"><strong>AWS Builder ID</strong>
+                <small>Approve a short code in any browser, on any device.</small></span>
+            </button>
+            <button class="method-card" data-method="identity-center" role="listitem">
+              <span class="method-icon"><i data-lucide="building-2"></i></span>
+              <span class="method-text"><strong>IAM Identity Center</strong>
+                <small>Your company's AWS start URL (Kiro Enterprise).</small></span>
+              <span class="method-tag" data-loopback-tag>This machine only</span>
+            </button>
+            <button class="method-card" data-method="manual" role="listitem">
+              <span class="method-icon"><i data-lucide="clipboard-pen"></i></span>
+              <span class="method-text"><strong>Enter details</strong>
+                <small>A Kiro API key, or a refresh token you already have.</small></span>
+            </button>
+          </div>
+          <p class="muted small" id="na-loopback-note" hidden>
+            <i data-lucide="info"></i> Options marked “This machine only” need this dashboard
+            opened at <code>localhost</code> or <code>127.0.0.1</code>, because Kiro and AWS only
+            return to those addresses. You're on <code id="na-current-host"></code>.
+          </p>
+        </section>
+
+        <!-- Step 2a: region / start URL before a sign-in -->
+        <section id="na-configure" class="na-step" hidden>
+          <div class="form-grid">
+            <label id="na-starturl-field" class="span-2"
+              >Start URL<input id="na-starturl" type="url" inputmode="url"
+                placeholder="https://d-1234567890.awsapps.com/start" autocomplete="off" />
+              <span class="field-hint">From your AWS access portal. Ask your administrator if you don't know it.</span></label
+            ><label
+              >Region<select id="na-region"><option value="us-east-1" selected>us-east-1</option><option value="eu-central-1">eu-central-1</option><option value="us-west-2">us-west-2</option><option value="eu-west-1">eu-west-1</option><option value="ap-southeast-1">ap-southeast-1</option><option value="ap-northeast-1">ap-northeast-1</option></select>
+              <span class="field-hint" id="na-region-hint">Where your sign-in lives. Most accounts use us-east-1.</span></label
+            >
+          </div>
+          <div class="error-text" id="na-configure-error" role="alert"></div>
+        </section>
+
+        <!-- Step 2b: waiting for the browser -->
+        <section id="na-waiting" class="na-step" hidden aria-live="polite">
+          <div class="signin-panel">
+            <div class="device-code" id="na-device" hidden>
+              <span class="field-label">Your code</span>
+              <strong id="na-user-code" class="mono"></strong>
+              <button class="button small" id="na-copy-code"><i data-lucide="copy"></i><span>Copy</span></button>
+            </div>
+            <p id="na-waiting-text">Finish signing in in the tab that just opened.</p>
+            <div class="signin-actions">
+              <a class="button primary" id="na-open-link" target="_blank" rel="noopener"
+                ><i data-lucide="external-link"></i><span>Open sign-in page</span></a
+              ><button class="button" id="na-copy-link"><i data-lucide="link"></i><span>Copy link</span></button>
+            </div>
+            <div class="signin-status"><span class="spinner"></span><span id="na-status-text">Waiting for you to finish…</span></div>
+          </div>
+        </section>
+
+        <!-- Step 2c: manual details form -->
+        <section id="na-manual" class="na-step" hidden>
+          <div class="segmented" role="radiogroup" aria-label="Credential type">
+            <label><input type="radio" name="na-kind" value="api_key" checked /><span>API key</span></label>
+            <label><input type="radio" name="na-kind" value="social" /><span>Google / GitHub token</span></label>
+            <label><input type="radio" name="na-kind" value="idc" /><span>Builder ID / Identity Center token</span></label>
+          </div>
+          <div class="form-grid" id="na-manual-fields">
+            <label class="span-2" data-kind="api_key"
+              >API key<input id="nm-api-key" type="password" autocomplete="off" spellcheck="false" placeholder="ksk_…" />
+              <span class="field-hint">Created in the Kiro web console under API keys.</span></label
+            ><label data-kind="social"
+              >Signed in with<select id="nm-provider"><option value="Google">Google</option><option value="Github">GitHub</option></select></label
+            ><label data-kind="idc"
+              >Sign-in type<select id="nm-idc-provider"><option value="BuilderId">AWS Builder ID</option><option value="Enterprise">IAM Identity Center</option></select></label
+            ><label class="span-2" data-kind="social idc"
+              >Refresh token<input id="nm-refresh" type="password" autocomplete="off" spellcheck="false" />
+              <span class="field-hint">A fresh access token is fetched for you when you add the account.</span></label
+            ><label data-kind="idc"
+              >Client ID<input id="nm-client-id" autocomplete="off" spellcheck="false" /></label
+            ><label data-kind="idc"
+              >Client secret<input id="nm-client-secret" type="password" autocomplete="off" spellcheck="false" /></label
+            ><label class="span-2" data-kind="idc" id="nm-starturl-field"
+              >Start URL<input id="nm-starturl" type="url" placeholder="https://d-1234567890.awsapps.com/start" autocomplete="off" /></label
+            ><label
+              >Region<select id="nm-region"><option value="us-east-1" selected>us-east-1</option><option value="eu-central-1">eu-central-1</option><option value="us-west-2">us-west-2</option><option value="eu-west-1">eu-west-1</option><option value="ap-southeast-1">ap-southeast-1</option><option value="ap-northeast-1">ap-northeast-1</option></select></label
+            >
+          </div>
+          <p class="muted small">Have a file exported from another tool? Use
+            <button class="link-button" id="na-to-bulk">Bulk import</button> instead.</p>
+          <div class="error-text" id="na-manual-error" role="alert"></div>
+        </section>
+
+        <!-- Step 3: done -->
+        <section id="na-done" class="na-step" hidden aria-live="polite">
+          <div class="done-panel">
+            <span class="done-icon"><i data-lucide="check"></i></span>
+            <div>
+              <strong id="na-done-title">Account added</strong>
+              <p class="muted" id="na-done-text"></p>
+            </div>
+          </div>
+        </section>
+
+        <div id="na-settings-wrap">
+          <details class="account-settings" id="na-settings">
+            <summary>Pool settings</summary>
+            <div class="form-grid">
+              <label
+                >Priority<input id="na-priority" type="number" min="1" value="1" />
+                <span class="field-hint">Lower numbers are used first.</span></label
+              ><label
+                >Proxy<select id="na-proxy" data-proxy-select>
+                  <option value="">Direct / environment</option>
+                </select></label
+              ><label class="span-2"
+                >Note<input id="na-comment" placeholder="e.g. Personal, Team pool" /></label
+              >
+            </div>
+          </details>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="button" id="na-back" hidden><i data-lucide="arrow-left"></i><span>Back</span></button>
+        <span class="footer-spacer"></span>
+        <button class="button" data-close="new-account-dialog" id="na-cancel">Cancel</button
+        ><button class="button primary" id="na-primary" hidden>Continue</button>
+      </div>
+    </dialog>
+
+    <dialog id="account-dialog" class="modal wide" aria-labelledby="account-dialog-title">
+      <form method="dialog" class="modal-heading">
+        <div>
+          <p class="eyebrow" id="account-dialog-eyebrow">Account</p>
           <h2 id="account-dialog-title">Account</h2>
         </div>
         <button class="icon-button" value="cancel" aria-label="Close">
@@ -461,32 +609,46 @@
       </form>
       <div class="modal-body">
         <input type="hidden" id="edit-account-id" />
-        <label
-          >Canonical credential JSON<textarea
-            id="edit-credentials"
-            rows="15"
-            spellcheck="false"
-          ></textarea>
-        </label>
+        <div class="account-overview" id="edit-overview"></div>
+
+        <h3 class="section-title">Pool settings</h3>
         <div class="form-grid">
           <label
-            >Priority<input id="edit-priority" type="number" value="1" /></label
+            >Priority<input id="edit-priority" type="number" min="1" value="1" />
+            <span class="field-hint">Lower numbers are used first.</span></label
           ><label
-            >Proxy<select id="edit-proxy">
+            >Proxy<select id="edit-proxy" data-proxy-select>
               <option value="">Direct / environment</option>
             </select></label
-          ><label>Comment<input id="edit-comment" /></label
-          ><label class="check-label"
-            ><input id="edit-enabled" type="checkbox" /> Enabled in pool</label
-          ><label class="check-label"
-            ><input id="edit-convert" type="checkbox" /> Refresh OAuth token
-            before saving</label
+          ><label class="span-2"
+            >Note<input id="edit-comment" /></label
           >
         </div>
-        <div id="edit-error" class="error-text"></div>
+        <label class="switch-row">
+          <span><strong>Use this account</strong><small id="edit-enabled-hint">Requests can be routed to this account.</small></span>
+          <input id="edit-enabled" type="checkbox" role="switch" />
+        </label>
+
+        <h3 class="section-title">Sign-in</h3>
+        <dl class="credential-facts" id="edit-credential-facts"></dl>
+        <div class="credential-actions">
+          <button class="button small" id="edit-refresh-token"><i data-lucide="refresh-cw"></i><span>Refresh token now</span></button>
+          <button class="button small" id="edit-test"><i data-lucide="play"></i><span>Send test request</span></button>
+        </div>
+        <details class="advanced" id="edit-advanced">
+          <summary>Advanced: edit raw credential</summary>
+          <p class="muted small">Only for fixing an imported credential. Changes replace what's stored.</p>
+          <textarea id="edit-credentials" rows="12" spellcheck="false" aria-label="Raw credential JSON"></textarea>
+          <label class="check-label"
+            ><input id="edit-convert" type="checkbox" /> Fetch a new access token when saving</label
+          >
+        </details>
+        <div id="edit-error" class="error-text" role="alert"></div>
       </div>
       <div class="modal-footer">
-        <button class="button" data-close="account-dialog">Close</button
+        <button class="button danger" id="edit-delete"><i data-lucide="trash-2"></i><span>Delete</span></button>
+        <span class="footer-spacer"></span>
+        <button class="button" data-close="account-dialog">Cancel</button
         ><button class="button primary" id="save-account">Save changes</button>
       </div>
     </dialog>

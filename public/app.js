@@ -244,27 +244,11 @@ function summary(label, value, note) {
 }
 
 let parseDebounce;
-function openImport(mode = "bulk") {
-  const single = mode === "single";
-  $("#import-dialog-title").textContent = single
-    ? "New Kiro account"
-    : "Bulk import Kiro accounts";
-  $("#submit-import").textContent = single
-    ? "Create account"
-    : "Convert & import";
-  $("#import-text").value = single
-    ? JSON.stringify(
-        {
-          accessToken: "",
-          refreshToken: "",
-          provider: "Google",
-          region: "us-east-1",
-        },
-        null,
-        2,
-      )
-    : "";
-  $("#detected-accounts").textContent = single ? "1 — Google account" : "0";
+function openImport() {
+  $("#import-dialog-title").textContent = "Bulk import Kiro accounts";
+  $("#submit-import").textContent = "Convert & import";
+  $("#import-text").value = "";
+  $("#detected-accounts").textContent = "0";
   $("#parse-error").textContent = "";
   $("#import-result").classList.add("hidden");
   $("#import-progress").classList.add("hidden");
@@ -315,56 +299,396 @@ async function submitImport() {
     $("#import-progress").classList.add("hidden");
   }
 }
+// ---------- Edit account ----------
+let editingCredentialsJson = "";
+const SIGN_IN_ICONS = {
+  "API key": "key-square",
+  Google: "log-in",
+  GitHub: "log-in",
+  "AWS Builder ID": "key-round",
+  "IAM Identity Center": "building-2",
+};
+function relativeTime(value) {
+  if (!value) return "—";
+  const ms = new Date(value).getTime() - Date.now();
+  const abs = Math.abs(ms);
+  const units = [["day", 86400000], ["hour", 3600000], ["minute", 60000]];
+  const fmt = new Intl.RelativeTimeFormat(undefined, { numeric: "auto" });
+  for (const [unit, size] of units) if (abs >= size) return fmt.format(Math.round(ms / size), unit);
+  return ms >= 0 ? "in under a minute" : "just now";
+}
+function fact(label, value, title = "") {
+  return `<div><dt>${label}</dt><dd${title ? ` title="${escapeHtml(title)}"` : ""}>${value}</dd></div>`;
+}
+function renderAccountOverview(account) {
+  const status = account.statusInfo;
+  const summary = account.credentialSummary || {};
+  const remaining = Number(status?.remaining || 0);
+  const limit = Number(status?.usageLimit || 0);
+  const percent = limit > 0 ? Math.min(100, (remaining / limit) * 100) : 0;
+  const level = percent < 10 ? "low" : percent < 30 ? "medium" : "";
+  const active = account.enabled && !account.autoDisabled;
+  const state = account.autoDisabled
+    ? `<span class="badge disabled" title="${escapeHtml(account.disabledReason || "")}">Auto-disabled</span>`
+    : `<span class="badge ${active ? "normal" : "disabled"}">${active ? "Active" : "Paused"}</span>`;
+  $("#edit-overview").innerHTML = `
+    <div class="overview-main">
+      <span class="method-icon"><i data-lucide="${SIGN_IN_ICONS[summary.signIn] || "user"}"></i></span>
+      <div>
+        <strong>${escapeHtml(summary.email || summary.signIn || "Kiro account")}</strong>
+        <small>${escapeHtml(summary.email ? summary.signIn : status?.subscriptionTitle || "Plan unknown")}${summary.email && status?.subscriptionTitle ? ` · ${escapeHtml(status.subscriptionTitle)}` : ""}</small>
+      </div>
+      ${state}
+    </div>
+    <div class="overview-credits">
+      <div class="credit-label">${status ? `${number(remaining, 2)} of ${number(limit, 0)} credits left` : "Credits not fetched yet"}${status?.nextResetAt ? ` · resets ${relativeTime(status.nextResetAt)}` : ""}</div>
+      <div class="credit-track"><div class="credit-fill ${level}" style="width:${percent}%"></div></div>
+      <small>Used through this adapter: ${number(account.usage?.totalKiroCredits)} credits · $${number(account.usage?.totalCostUsd, 2)} estimated</small>
+    </div>
+    ${account.autoDisabled && account.disabledReason ? `<p class="overview-warning"><i data-lucide="triangle-alert"></i>${escapeHtml(account.disabledReason)}</p>` : ""}`;
+  const expired = summary.expiresAt && new Date(summary.expiresAt).getTime() < Date.now();
+  $("#edit-credential-facts").innerHTML = [
+    fact("Signed in with", escapeHtml(summary.signIn || "—")),
+    fact("Region", escapeHtml(summary.runtimeRegion && summary.runtimeRegion !== summary.region ? `${summary.region} · runs in ${summary.runtimeRegion}` : summary.region || "—")),
+    summary.method === "api_key"
+      ? fact("API key", `<code>${escapeHtml(summary.accessTokenHint || "—")}</code>`)
+      : fact("Access token", summary.expiresAt ? `<span class="${expired ? "text-warn" : ""}">${expired ? "expired" : "expires"} ${relativeTime(summary.expiresAt)}</span>` : "—", summary.expiresAt ? date(summary.expiresAt) : ""),
+    summary.method === "api_key"
+      ? ""
+      : fact("Refresh token", summary.hasRefreshToken ? `<code>${escapeHtml(summary.refreshTokenHint)}</code> · renewed automatically` : '<span class="text-warn">missing — sign in again to keep this account working</span>'),
+    summary.startUrl ? fact("Start URL", escapeHtml(summary.startUrl)) : "",
+  ].join("");
+  $("#edit-refresh-token").hidden = summary.method === "api_key" || !summary.hasRefreshToken;
+}
 async function editAccount(id) {
   try {
     const account = await api(`/api/accounts/${id}`);
     $("#edit-account-id").value = id;
-    $("#account-dialog-title").textContent = `Account ${id} · Edit`;
-    $("#account-dialog-eyebrow").textContent = "EDIT LOCAL CREDENTIAL";
-    $("#edit-credentials").value = JSON.stringify(account.credentials, null, 2);
-    $("#edit-credentials").readOnly = false;
+    $("#account-dialog-eyebrow").textContent = `Account #${id}`;
+    $("#account-dialog-title").textContent = account.comment && !/^(Bulk imported Kiro account|Added manually|Signed in with .*)$/.test(account.comment)
+      ? account.comment
+      : account.credentialSummary?.email || account.credentialSummary?.signIn || `Account ${id}`;
+    renderAccountOverview(account);
+    editingCredentialsJson = JSON.stringify(account.credentials, null, 2);
+    $("#edit-credentials").value = editingCredentialsJson;
+    $("#edit-advanced").open = false;
+    $("#edit-convert").checked = false;
     $("#edit-priority").value = account.priority;
     $("#edit-comment").value = account.comment;
     $("#edit-enabled").checked = account.enabled && !account.autoDisabled;
-    $("#edit-convert").checked = false;
+    $("#edit-enabled-hint").textContent = account.autoDisabled
+      ? "Turned off automatically. Switch on to try it again."
+      : "Requests can be routed to this account.";
     $("#edit-proxy").value = account.proxyId || "";
-    $$(
-      "#account-dialog .form-grid input, #account-dialog .form-grid select",
-    ).forEach((element) => (element.disabled = false));
-    $("#save-account").classList.remove("hidden");
     $("#edit-error").textContent = "";
+    refreshIcons();
     openDialog("#account-dialog");
+    // New accounts may not have credits yet; fetch them now instead of waiting
+    // for the background refresh.
+    if (!account.statusInfo)
+      api(`/api/accounts/${id}/usage`, { method: "POST" })
+        .then(() => api(`/api/accounts/${id}`))
+        .then((fresh) => {
+          if ($("#account-dialog").open && $("#edit-account-id").value === String(id)) {
+            renderAccountOverview(fresh);
+            refreshIcons();
+          }
+        })
+        .catch(() => {});
   } catch (error) {
     toast(error.message, true);
   }
 }
 async function saveAccount() {
   const id = $("#edit-account-id").value;
+  const button = $("#save-account");
+  const payload = {
+    priority: Math.max(1, Number($("#edit-priority").value) || 1),
+    comment: $("#edit-comment").value,
+    enabled: $("#edit-enabled").checked,
+    autoDisabled: $("#edit-enabled").checked ? false : undefined,
+    disabledReason: $("#edit-enabled").checked ? null : undefined,
+    proxyId: $("#edit-proxy").value ? Number($("#edit-proxy").value) : null,
+  };
+  // Only send credentials when the advanced editor was actually changed.
+  const raw = $("#edit-credentials").value;
+  if (raw.trim() !== editingCredentialsJson.trim() || $("#edit-convert").checked) {
+    try {
+      payload.credentials = JSON.parse(raw);
+    } catch {
+      $("#edit-advanced").open = true;
+      $("#edit-error").textContent = "The raw credential isn't valid JSON.";
+      return;
+    }
+    payload.convert = $("#edit-convert").checked;
+  }
+  button.disabled = true;
   try {
-    const credentials = JSON.parse($("#edit-credentials").value);
-    await api(`/api/accounts/${id}`, {
-      method: "PATCH",
-      body: JSON.stringify({
-        credentials,
-        priority: Number($("#edit-priority").value),
-        comment: $("#edit-comment").value,
-        enabled: $("#edit-enabled").checked,
-        autoDisabled: $("#edit-enabled").checked ? false : undefined,
-        disabledReason: $("#edit-enabled").checked ? null : undefined,
-        proxyId: $("#edit-proxy").value ? Number($("#edit-proxy").value) : null,
-        convert: $("#edit-convert").checked,
-      }),
-    });
+    await api(`/api/accounts/${id}`, { method: "PATCH", body: JSON.stringify(payload) });
     closeDialog("#account-dialog");
     await loadAccounts();
     toast("Account saved");
   } catch (error) {
     $("#edit-error").textContent = error.message;
+  } finally {
+    button.disabled = false;
   }
+}
+async function runEditAction(button, work, done) {
+  button.disabled = true;
+  button.classList.add("is-loading");
+  try {
+    await work();
+    toast(done);
+    const account = await api(`/api/accounts/${$("#edit-account-id").value}`);
+    renderAccountOverview(account);
+    editingCredentialsJson = JSON.stringify(account.credentials, null, 2);
+    if (!$("#edit-advanced").open) $("#edit-credentials").value = editingCredentialsJson;
+    refreshIcons();
+    loadAccounts();
+  } catch (error) {
+    $("#edit-error").textContent = error.message;
+  } finally {
+    button.disabled = false;
+    button.classList.remove("is-loading");
+  }
+}
+
+// ---------- New account ----------
+const isLoopback = ["localhost", "127.0.0.1", "[::1]"].includes(location.hostname) && location.protocol === "http:";
+const newAccount = { method: null, step: "choose", login: null, pollTimer: null, popup: null };
+const NA_STEPS = ["choose", "configure", "waiting", "manual", "done"];
+const METHOD_TITLES = {
+  kiro: "Sign in with Kiro",
+  "builder-id": "Sign in with AWS Builder ID",
+  "identity-center": "Sign in with IAM Identity Center",
+  manual: "Enter account details",
+};
+
+function naShow(step) {
+  newAccount.step = step;
+  for (const name of NA_STEPS) $(`#na-${name}`).hidden = name !== step;
+  const method = newAccount.method;
+  $("#new-account-title").textContent = step === "choose" ? "Add a Kiro account" : step === "done" ? "Account added" : METHOD_TITLES[method];
+  $("#new-account-step").textContent = step === "choose" ? "Step 1 of 2" : step === "done" ? "Done" : "Step 2 of 2";
+  $("#na-back").hidden = step === "choose" || step === "done";
+  $("#na-settings-wrap").hidden = !(step === "configure" || step === "manual" || step === "waiting");
+  const primary = $("#na-primary");
+  primary.hidden = !(step === "configure" || step === "manual" || step === "done");
+  primary.disabled = false;
+  primary.innerHTML = step === "configure"
+    ? '<i data-lucide="log-in"></i><span>Continue to sign-in</span>'
+    : step === "manual"
+      ? '<i data-lucide="user-plus"></i><span>Add account</span>'
+      : '<span>Add another</span>';
+  $("#na-cancel").textContent = step === "done" ? "Close" : "Cancel";
+  refreshIcons();
+}
+function naReset() {
+  naStopPolling(true);
+  newAccount.method = null;
+  newAccount.login = null;
+  $("#na-configure-error").textContent = "";
+  $("#na-manual-error").textContent = "";
+  $("#na-priority").value = 1;
+  $("#na-comment").value = "";
+  $("#na-proxy").value = "";
+  $("#na-settings").open = false;
+  for (const id of ["nm-api-key", "nm-refresh", "nm-client-id", "nm-client-secret", "nm-starturl", "na-starturl"]) $(`#${id}`).value = "";
+  naShow("choose");
+}
+function openNewAccount() {
+  naReset();
+  $("#na-current-host").textContent = location.host;
+  $("#na-loopback-note").hidden = isLoopback;
+  $$("[data-loopback-tag]").forEach((tag) => (tag.hidden = isLoopback));
+  $$('.method-card[data-method="kiro"], .method-card[data-method="identity-center"]').forEach((card) => {
+    card.disabled = !isLoopback;
+    card.title = isLoopback ? "" : "Open the dashboard at localhost or 127.0.0.1 to use this option";
+  });
+  openDialog("#new-account-dialog");
+}
+function naChoose(method) {
+  newAccount.method = method;
+  if (method === "manual") {
+    naSetKind("api_key");
+    naShow("manual");
+    $("#nm-api-key").focus();
+    return;
+  }
+  const idc = method === "identity-center";
+  $("#na-starturl-field").hidden = !idc;
+  $("#na-region-hint").textContent = idc
+    ? "The region your organization's IAM Identity Center is in."
+    : method === "builder-id"
+      ? "Builder ID always signs in through us-east-1."
+      : "Kiro's sign-in region. Most accounts use us-east-1.";
+  $("#na-region").value = "us-east-1";
+  $("#na-region").disabled = method === "builder-id";
+  if (method === "kiro" || method === "builder-id") return naStartLogin();
+  naShow("configure");
+  $("#na-starturl").focus();
+}
+function naCommonOptions(prefix = "na") {
+  return {
+    priority: Math.max(1, Number($(`#${prefix}-priority`).value) || 1),
+    comment: $(`#${prefix}-comment`).value,
+    proxyId: $(`#${prefix}-proxy`).value || null,
+  };
+}
+async function naStartLogin() {
+  const method = newAccount.method;
+  const body = {
+    region: $("#na-region").value,
+    origin: location.origin,
+    proxyId: $("#na-proxy").value || null,
+  };
+  if (method === "identity-center") {
+    body.startUrl = $("#na-starturl").value.trim();
+    if (!/^https:\/\/.+/.test(body.startUrl)) {
+      $("#na-configure-error").textContent = "Enter your start URL, starting with https://";
+      naShow("configure");
+      return;
+    }
+  }
+  // Open the tab right away (inside the click) so popup blockers allow it;
+  // it's pointed at the real sign-in URL once the server returns it.
+  const popup = method === "builder-id" ? null : window.open("about:blank", "_blank");
+  newAccount.popup = popup;
+  const primary = $("#na-primary");
+  primary.disabled = true;
+  try {
+    const login = await api(`/api/logins/${method}`, { method: "POST", body: JSON.stringify(body) });
+    if (login.status === "failed") throw new Error(login.error || "Sign-in could not start");
+    newAccount.login = login;
+    $("#na-open-link").href = login.verificationUrl;
+    $("#na-device").hidden = method !== "builder-id";
+    $("#na-user-code").textContent = login.userCode || "";
+    $("#na-waiting-text").textContent = method === "builder-id"
+      ? "Open the AWS page, check that it shows this code, and approve. You can do this on any device."
+      : method === "kiro"
+        ? "Choose Google, GitHub or your organization in the Kiro tab that just opened. This page updates when you're done."
+        : "Sign in with your organization in the tab that just opened. This page updates when you're done.";
+    $("#na-status-text").textContent = "Waiting for you to finish…";
+    if (popup && !popup.closed) popup.location.href = login.verificationUrl;
+    naShow("waiting");
+    naPoll();
+  } catch (error) {
+    if (popup && !popup.closed) popup.close();
+    naShow(method === "identity-center" ? "configure" : "choose");
+    if (method === "identity-center") $("#na-configure-error").textContent = error.message;
+    else toast(error.message, true);
+  } finally {
+    primary.disabled = false;
+  }
+}
+function naStopPolling(cancel = false) {
+  clearTimeout(newAccount.pollTimer);
+  newAccount.pollTimer = null;
+  if (cancel && newAccount.login?.status === "pending")
+    api(`/api/logins/${newAccount.login.id}`, { method: "DELETE" }).catch(() => {});
+}
+async function naPoll() {
+  const login = newAccount.login;
+  if (!login || newAccount.step !== "waiting") return;
+  try {
+    const current = await api(`/api/logins/${login.id}`);
+    newAccount.login = current;
+    if (current.status === "complete") return naFinishLogin(current);
+    if (current.status !== "pending") {
+      $("#na-status-text").textContent = current.error || "Sign-in stopped.";
+      $(".signin-status .spinner").hidden = true;
+      $(".signin-status").classList.add("is-error");
+      return;
+    }
+  } catch (error) {
+    $("#na-status-text").textContent = error.message;
+  }
+  newAccount.pollTimer = setTimeout(naPoll, 1500);
+}
+async function naFinishLogin(login) {
+  $("#na-status-text").textContent = "Signed in. Adding the account…";
+  try {
+    const created = await api(`/api/logins/${login.id}/account`, { method: "POST", body: JSON.stringify(naCommonOptions()) });
+    naDone(created.id, `Signed in with ${login.label}. Credits will appear in a moment.`);
+  } catch (error) {
+    $("#na-status-text").textContent = error.message;
+    $(".signin-status .spinner").hidden = true;
+    $(".signin-status").classList.add("is-error");
+  }
+}
+function naDone(id, text) {
+  newAccount.popup = null;
+  $("#na-done-title").textContent = `Account #${id} added`;
+  $("#na-done-text").textContent = text;
+  naShow("done");
+  loadAccounts();
+}
+function naSetKind(kind) {
+  $$('input[name="na-kind"]').forEach((input) => (input.checked = input.value === kind));
+  $$("#na-manual-fields [data-kind]").forEach((field) => {
+    field.hidden = !field.dataset.kind.split(" ").includes(kind);
+  });
+  naUpdateStartUrlField();
+  $("#na-manual-error").textContent = "";
+}
+function naUpdateStartUrlField() {
+  const kind = $('input[name="na-kind"]:checked').value;
+  $("#nm-starturl-field").hidden = !(kind === "idc" && $("#nm-idc-provider").value === "Enterprise");
+}
+async function naSubmitManual() {
+  const kind = $('input[name="na-kind"]:checked').value;
+  const region = $("#nm-region").value;
+  const value = (id) => $(`#${id}`).value.trim();
+  let credentials;
+  if (kind === "api_key") {
+    if (!value("nm-api-key")) return naManualError("Enter the API key.", "nm-api-key");
+    credentials = { accessToken: value("nm-api-key"), authMethod: "api_key", region, runtimeRegion: region };
+  } else if (kind === "social") {
+    if (!value("nm-refresh")) return naManualError("Enter the refresh token.", "nm-refresh");
+    credentials = { refreshToken: value("nm-refresh"), authMethod: "social", provider: $("#nm-provider").value, region };
+  } else {
+    const provider = $("#nm-idc-provider").value;
+    if (!value("nm-refresh")) return naManualError("Enter the refresh token.", "nm-refresh");
+    if (!value("nm-client-id")) return naManualError("Enter the client ID.", "nm-client-id");
+    if (!value("nm-client-secret")) return naManualError("Enter the client secret.", "nm-client-secret");
+    if (provider === "Enterprise" && !/^https:\/\/.+/.test(value("nm-starturl"))) return naManualError("Enter the start URL, starting with https://", "nm-starturl");
+    credentials = {
+      refreshToken: value("nm-refresh"),
+      clientId: value("nm-client-id"),
+      clientSecret: value("nm-client-secret"),
+      authMethod: "IdC",
+      provider,
+      region,
+      startUrl: provider === "Enterprise" ? value("nm-starturl") : "https://view.awsapps.com/start",
+    };
+  }
+  const button = $("#na-primary");
+  button.disabled = true;
+  button.classList.add("is-loading");
+  button.innerHTML = '<i data-lucide="loader-circle"></i><span>Checking…</span>';
+  refreshIcons();
+  try {
+    const created = await api("/api/accounts/create", {
+      method: "POST",
+      body: JSON.stringify({ credentials, ...naCommonOptions(), source: kind === "api_key" ? "Added with an API key" : "Added manually" }),
+    });
+    naDone(created.id, kind === "api_key" ? "The API key was saved." : "The token was checked and a fresh access token was fetched.");
+  } catch (error) {
+    naManualError(error.message);
+  } finally {
+    button.classList.remove("is-loading");
+    if (newAccount.step === "manual") naShow("manual");
+  }
+}
+function naManualError(message, focusId) {
+  $("#na-manual-error").textContent = message;
+  if (focusId) $(`#${focusId}`).focus();
 }
 async function accountAction(action, id) {
   try {
     if (action === "edit") return editAccount(id);
+    if (action === "delete" && $("#account-dialog").open) closeDialog("#account-dialog");
     if (action === "delete") {
       if (
         !confirm(
@@ -435,7 +759,9 @@ function renderProxies() {
     .join("");
 }
 function renderProxyOptions() {
-  const select = $("#edit-proxy");
+  for (const select of $$("[data-proxy-select]")) renderProxySelect(select);
+}
+function renderProxySelect(select) {
   const current = select.value;
   select.innerHTML =
     '<option value="">Direct / environment</option>' +
@@ -1322,8 +1648,38 @@ window.addEventListener("resize", () =>
 );
 
 $("#open-import").onclick = () => openImport("bulk");
-$("[data-open-import]").onclick = () => openImport("bulk");
-$("#new-account").onclick = () => openImport("single");
+$("[data-open-import]").onclick = () => openNewAccount();
+$("#new-account").onclick = () => openNewAccount();
+$$(".method-card").forEach((card) => (card.onclick = () => naChoose(card.dataset.method)));
+$("#na-back").onclick = () => {
+  naStopPolling(true);
+  naShow(newAccount.method === "identity-center" && newAccount.step === "waiting" ? "configure" : "choose");
+};
+$("#na-primary").onclick = () => {
+  if (newAccount.step === "configure") naStartLogin();
+  else if (newAccount.step === "manual") naSubmitManual();
+  else if (newAccount.step === "done") naReset();
+};
+$("#new-account-dialog").addEventListener("close", () => naStopPolling(true));
+$$('input[name="na-kind"]').forEach((input) => (input.onchange = () => naSetKind(input.value)));
+$("#nm-idc-provider").onchange = naUpdateStartUrlField;
+$("#na-to-bulk").onclick = () => { closeDialog("#new-account-dialog"); openImport(); };
+$("#na-copy-link").onclick = async () => {
+  try { await copyText($("#na-open-link").href); toast("Sign-in link copied"); } catch (error) { toast(error.message, true); }
+};
+$("#na-copy-code").onclick = async () => {
+  try { await copyText($("#na-user-code").textContent); toast("Code copied"); } catch (error) { toast(error.message, true); }
+};
+$("#na-open-link").onclick = () => { $("#na-status-text").textContent = "Waiting for you to finish…"; };
+$("#na-manual").addEventListener("keydown", (event) => {
+  if (event.key === "Enter" && event.target.matches("input")) { event.preventDefault(); naSubmitManual(); }
+});
+$("#na-configure").addEventListener("keydown", (event) => {
+  if (event.key === "Enter" && event.target.matches("input")) { event.preventDefault(); naStartLogin(); }
+});
+$("#edit-delete").onclick = () => accountAction("delete", Number($("#edit-account-id").value));
+$("#edit-refresh-token").onclick = () => runEditAction($("#edit-refresh-token"), () => api(`/api/accounts/${$("#edit-account-id").value}/refresh`, { method: "POST" }), "Access token refreshed");
+$("#edit-test").onclick = () => runEditAction($("#edit-test"), () => api(`/api/accounts/${$("#edit-account-id").value}/test`, { method: "POST" }), "The account answered a test request");
 $("#submit-import").onclick = submitImport;
 $("#import-text").oninput = () => {
   clearTimeout(parseDebounce);

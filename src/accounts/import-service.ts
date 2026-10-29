@@ -25,6 +25,42 @@ export class AccountImportService {
     private readonly tokens: TokenManager,
   ) {}
 
+  /**
+   * Create one account from a credential gathered by the New account dialog
+   * (a sign-in flow or the manual form). Same conversion and duplicate check
+   * as bulk import; returns a clear error instead of a per-row failure list.
+   */
+  async createOne(
+    raw: unknown,
+    options: {
+      proxyId?: number | null;
+      priority?: number;
+      comment?: string;
+      enabled?: boolean;
+      source: string;
+    },
+  ): Promise<{ id: number }> {
+    const credential = toKiroCanonicalJson(raw) as KiroCredentials;
+    if (!credential.accessToken && !credential.refreshToken)
+      throw new Error("A refresh token or access token is required");
+    const proxy =
+      options.proxyId == null ? null : this.proxies.get(options.proxyId);
+    if (options.proxyId != null && !proxy) throw new Error("Proxy not found");
+    const resolved = await this.tokens.convertCredential(credential, proxy);
+    if (this.accounts.hasDuplicate(resolved))
+      throw new Error("This account is already in the pool");
+    const account = this.accounts.create({
+      credentials: resolved,
+      proxyId: proxy?.id ?? null,
+      priority: options.priority,
+      comment: options.comment?.trim() || options.source,
+      source: options.source,
+    });
+    if (options.enabled === false)
+      this.accounts.update(account.id, { enabled: false });
+    return { id: account.id };
+  }
+
   async import(
     rawAccounts: unknown[],
     proxyMode: KiroBulkProxyMode = "none",

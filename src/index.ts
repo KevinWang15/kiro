@@ -49,6 +49,7 @@ function shutdown(): void {
   clearInterval(refreshTimer);
   clearInterval(usageTimer);
   clearTimeout(initialUsageTimer);
+  context.logins.close();
   server.close(() => {
     context.database.close();
     process.exit(0);

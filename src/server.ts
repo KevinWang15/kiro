@@ -12,6 +12,8 @@ import { parseCredentialInput } from "./accounts/credential-input.ts";
 import { handleCountTokensRequest } from "./kiro/token.ts";
 import type { MessagesRequest } from "./kiro/types.ts";
 import { parseCredentials, parseStatusInfo } from "./accounts/types.ts";
+import type { KiroCredentials } from "./accounts/types.ts";
+import { LoginFlowService, PORTAL_CALLBACK_PATHS } from "./accounts/login-flows.ts";
 
 export interface ServerContext {
   app: express.Express;
@@ -21,6 +23,52 @@ export interface ServerContext {
   tokens: TokenManager;
   usageService: UsageService;
   pool: KiroAccountPool;
+  logins: LoginFlowService;
+}
+
+const SIGN_IN_LABELS: Record<string, string> = {
+  BuilderId: "AWS Builder ID",
+  Enterprise: "IAM Identity Center",
+  Google: "Google",
+  Github: "GitHub",
+  ExternalIdp: "Organization sign-in",
+};
+
+// What the edit dialog shows instead of raw tokens.
+function credentialSummary(credentials: KiroCredentials) {
+  const authMethod = (credentials.authMethod || "").toLowerCase();
+  const apiKey = authMethod === "api_key" || authMethod === "apikey";
+  const tail = (value?: string) => (value ? `…${value.slice(-4)}` : null);
+  return {
+    method: apiKey ? "api_key" : authMethod || "unknown",
+    signIn: apiKey
+      ? "API key"
+      : SIGN_IN_LABELS[credentials.provider || ""] || credentials.provider || "OAuth",
+    email: credentials.email || null,
+    region: credentials.region || "us-east-1",
+    runtimeRegion: credentials.runtimeRegion || null,
+    expiresAt: apiKey ? null : credentials.expiresAt || null,
+    hasRefreshToken: Boolean(credentials.refreshToken),
+    accessTokenHint: tail(credentials.accessToken),
+    refreshTokenHint: tail(credentials.refreshToken),
+    startUrl: credentials.startUrl || null,
+    profileArn: credentials.profileArn || null,
+  };
+}
+
+// Escape text for the small HTML page shown after a browser sign-in.
+const escapeHtml = (value: string) =>
+  value.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
+
+function callbackPage(ok: boolean, message: string): string {
+  const color = ok ? "#4ade80" : "#f87171";
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Kiro sign-in</title>
+<link rel="icon" href="/favicon.svg" type="image/svg+xml"><meta name="color-scheme" content="dark">
+<style>body{margin:0;min-height:100vh;display:grid;place-items:center;background:#0e0e11;color:#e8e8ec;font:15px/1.5 system-ui,sans-serif}
+main{max-width:420px;padding:28px 30px;border:1px solid #26262d;border-radius:12px;background:#18181d;text-align:center}
+h1{font-size:18px;margin:0 0 8px;color:${color}}p{margin:0;color:#b4b4bd}</style></head>
+<body><main><h1>${ok ? "Signed in" : "Sign-in failed"}</h1><p>${escapeHtml(message)}</p></main>
+${ok ? "<script>setTimeout(() => window.close(), 1500)</script>" : ""}</body></html>`;
 }
 
 function asyncRoute(handler: (req: Request, res: Response) => Promise<void>) {
@@ -65,6 +113,7 @@ export function createServerContext(database: AppDatabase): ServerContext {
   const importer = new AccountImportService(accounts, proxies, tokens);
   const usage = new UsageRepository(database);
   const pool = new KiroAccountPool(accounts, proxies, tokens, usage);
+  const logins = new LoginFlowService();
   const app = express();
 
   app.disable("x-powered-by");
@@ -107,6 +156,93 @@ export function createServerContext(database: AppDatabase): ServerContext {
   app.post("/api/accounts/import", importHandler);
   app.post("/api/accounts", importHandler);
 
+  // ---- New account: one credential from a sign-in session or the form ----
+  const proxyFor = (value: unknown) => {
+    if (value === undefined || value === null || value === "") return null;
+    const proxy = proxies.get(Number(value));
+    if (!proxy) throw new Error("Proxy not found");
+    return proxy;
+  };
+  const accountOptions = (body: any, source: string) => ({
+    proxyId: body?.proxyId == null || body.proxyId === "" ? null : Number(body.proxyId),
+    priority: body?.priority === undefined ? undefined : Number(body.priority),
+    comment: typeof body?.comment === "string" ? body.comment : undefined,
+    enabled: body?.enabled === undefined ? undefined : Boolean(body.enabled),
+    source,
+  });
+  const createdAccount = (id: number) => {
+    setImmediate(() => void usageService.refreshAccountUsage(id).catch(() => undefined));
+    return { success: true, id };
+  };
+
+  app.post(
+    "/api/accounts/create",
+    asyncRoute(async (req, res) => {
+      const body = req.body || {};
+      try {
+        const { id } = await importer.createOne(body.credentials, accountOptions(body, body.source || "Added manually"));
+        res.status(201).json(createdAccount(id));
+      } catch (error) {
+        res.status(400).json({ error: (error as Error).message });
+      }
+    }),
+  );
+
+  // ---- Interactive sign-in sessions ----
+  const loginRoute = (start: (body: any, origin: string) => Promise<unknown> | unknown) =>
+    asyncRoute(async (req, res) => {
+      try {
+        // The browser's own origin decides the redirect URI, so the callback
+        // returns to the same host and port the dashboard is open on.
+        const origin = String(req.body?.origin || `${req.protocol}://${req.get("host")}`);
+        res.status(201).json(await start(req.body || {}, origin));
+      } catch (error) {
+        res.status(400).json({ error: (error as Error).message });
+      }
+    });
+  app.post("/api/logins/builder-id", loginRoute((b) => logins.startBuilderId(String(b.region || "us-east-1"), proxyFor(b.proxyId))));
+  app.post("/api/logins/identity-center", loginRoute((b, origin) => logins.startIdentityCenter(String(b.region || ""), String(b.startUrl || ""), origin, proxyFor(b.proxyId))));
+  app.post("/api/logins/kiro", loginRoute((b, origin) => logins.startKiroPortal(String(b.region || "us-east-1"), origin, proxyFor(b.proxyId))));
+  app.get("/api/logins/:id", (req, res) => {
+    const view = logins.view(String(req.params.id));
+    if (!view) return void res.status(404).json({ error: "Sign-in session not found or expired" });
+    res.json(view);
+  });
+  app.delete("/api/logins/:id", (req, res) => {
+    logins.cancel(String(req.params.id));
+    res.json({ success: true });
+  });
+  app.post(
+    "/api/logins/:id/account",
+    asyncRoute(async (req, res) => {
+      const view = logins.view(String(req.params.id));
+      if (!view || view.status !== "complete")
+        return void res.status(409).json({ error: "This sign-in hasn't finished yet" });
+      const credentials = logins.take(String(req.params.id));
+      if (!credentials) return void res.status(409).json({ error: "This sign-in was already used" });
+      try {
+        const { id } = await importer.createOne(credentials, accountOptions(req.body, `Signed in with ${view.label}`));
+        res.status(201).json(createdAccount(id));
+      } catch (error) {
+        res.status(400).json({ error: (error as Error).message });
+      }
+    }),
+  );
+  const loginCallback = asyncRoute(async (req, res) => {
+    const params = new URLSearchParams(req.originalUrl.split("?")[1] || "");
+    const result = await logins.handleCallback(params, req.path);
+    if (result.redirect) return void res.redirect(302, result.redirect);
+    res.status(result.ok ? 200 : 400).type("html").send(callbackPage(result.ok, result.message));
+  });
+  // "/" is also the dashboard: only treat it as a sign-in return when it
+  // carries the OAuth response parameters.
+  app.get(PORTAL_CALLBACK_PATHS, (req, res, next) => {
+    const q = req.query;
+    const isReturn = typeof q.state === "string" && (q.code !== undefined || q.error !== undefined || q.login_option !== undefined);
+    if (req.path !== "/" || isReturn) return loginCallback(req, res);
+    next();
+  });
+
   app.get("/api/accounts/:id", (req, res) => {
     const account = accounts.get(Number(req.params.id));
     if (!account)
@@ -114,6 +250,7 @@ export function createServerContext(database: AppDatabase): ServerContext {
     res.json({
       id: account.id,
       credentials: parseCredentials(account),
+      credentialSummary: credentialSummary(parseCredentials(account)),
       statusInfo: parseStatusInfo(account),
       priority: account.priority,
       enabled: Boolean(account.enabled),
@@ -398,5 +535,5 @@ export function createServerContext(database: AppDatabase): ServerContext {
   );
   app.use((_req, res) => res.status(404).json({ error: "Not found" }));
 
-  return { app, database, accounts, proxies, tokens, usageService, pool };
+  return { app, database, accounts, proxies, tokens, usageService, pool, logins };
 }
