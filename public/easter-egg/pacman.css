@@ -1,0 +1,113 @@
+/* Pac-Man easter egg (triple-click the rail logo). Self-contained: remove
+   this directory and the two "easter-egg" lines in index.html to drop it. */
+.rail-logo.egg-ghost-away svg {
+  opacity: 0;
+}
+.rail-logo svg {
+  transition: opacity 0.15s ease-out;
+}
+
+.egg-flying-ghost {
+  position: fixed;
+  left: 0;
+  top: 0;
+  z-index: 1001;
+  pointer-events: none;
+  transform-origin: 0 0;
+  filter: drop-shadow(0 0 10px #a78bfaaa);
+}
+.egg-flying-ghost .ghost-body {
+  fill: #fff;
+}
+.egg-flying-ghost .ghost-eye {
+  fill: #111114;
+}
+
+.egg-pacman {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: grid;
+  place-items: center;
+  padding: 16px;
+  background: #07070acc;
+  backdrop-filter: blur(6px);
+  opacity: 0;
+  transition: opacity 0.35s ease-out;
+}
+.egg-pacman.open {
+  opacity: 1;
+}
+.egg-frame {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 16px 12px;
+  border-radius: var(--radius, 10px);
+  background: var(--canvas, #0e0e11);
+  box-shadow:
+    inset 0 0 0 1px var(--border-strong, #33333c),
+    0 24px 80px #000a;
+}
+.egg-hud {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  width: 100%;
+  font-family: var(--font-mono, monospace);
+  font-size: 12px;
+  letter-spacing: 0.08em;
+  color: var(--muted, #84848f);
+}
+.egg-hud b {
+  margin-left: 6px;
+  font-weight: 600;
+  color: var(--text, #e8e8ec);
+}
+.egg-hud .egg-spacer {
+  flex: 1;
+}
+.egg-close {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border: 0;
+  border-radius: var(--radius-sm, 6px);
+  background: transparent;
+  color: var(--muted, #84848f);
+  cursor: pointer;
+}
+.egg-close:hover {
+  background: var(--panel-hover, #22222a);
+  color: var(--text, #e8e8ec);
+}
+.egg-close:focus-visible {
+  outline: 2px solid var(--accent-ring, #8b5cf666);
+  outline-offset: 1px;
+}
+.egg-close svg {
+  width: 16px;
+  height: 16px;
+}
+.egg-pacman canvas {
+  display: block;
+  touch-action: none;
+}
+.egg-hint {
+  margin: 0;
+  font-family: var(--font-mono, monospace);
+  font-size: 11px;
+  color: var(--faint, #5f5f69);
+  text-align: center;
+}
+@media (prefers-reduced-motion: reduce) {
+  .egg-pacman,
+  .rail-logo svg {
+    transition: none;
+  }
+}
+.egg-pacman:focus {
+  outline: none;
+}

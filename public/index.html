@@ -1,0 +1,682 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="dark" />
+    <title>Kiro Local Adapter</title>
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="icon" href="/favicon-32.png" type="image/png" sizes="32x32" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <meta name="theme-color" content="#0e0e11" />
+    <link
+      rel="preload"
+      href="/vendor/fonts/inter/files/inter-latin-wght-normal.woff2"
+      as="font"
+      type="font/woff2"
+      crossorigin
+    />
+    <link
+      rel="preload"
+      href="/vendor/fonts/jetbrains-mono/files/jetbrains-mono-latin-wght-normal.woff2"
+      as="font"
+      type="font/woff2"
+      crossorigin
+    />
+    <link rel="stylesheet" href="/vendor/fonts/inter/index.css" />
+    <link rel="stylesheet" href="/vendor/fonts/jetbrains-mono/index.css" />
+    <link rel="stylesheet" href="/vendor/notyf.min.css" />
+    <link rel="stylesheet" href="/styles.css" />
+    <link rel="stylesheet" href="/easter-egg/pacman.css" /><!-- easter-egg -->
+  </head>
+  <body>
+    <div class="progress-bar" id="progress-bar" aria-hidden="true"></div>
+    <header class="titlebar">
+      <div class="titlebar-spacer" aria-hidden="true"></div>
+      <button
+        class="command-bar"
+        id="copy-base-url"
+        title="Copy ANTHROPIC_BASE_URL"
+      >
+        <span class="command-key">ANTHROPIC_BASE_URL</span>
+        <span class="command-sep">—</span>
+        <span id="titlebar-base-url"></span>
+        <i data-lucide="copy"></i>
+      </button>
+      <div class="titlebar-actions">
+        <button class="ghost-button" id="titlebar-copy-script">
+          <i data-lucide="square-terminal"></i><span>Connect Claude Code</span>
+        </button>
+      </div>
+    </header>
+
+    <nav class="rail" aria-label="Primary">
+      <a class="rail-logo" href="/" aria-label="Kiro local adapter home">
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path
+            class="ghost-body"
+            d="M12 2a8 8 0 0 0-8 8v12l3-3 2.5 2.5L12 19l2.5 2.5L17 19l3 3V10a8 8 0 0 0-8-8z"
+          />
+          <g class="ghost-eyes">
+            <ellipse class="ghost-eye" cx="9.2" cy="10.5" rx="1.1" ry="1.8" />
+            <ellipse class="ghost-eye" cx="14.8" cy="10.5" rx="1.1" ry="1.8" />
+          </g>
+        </svg>
+      </a>
+      <a href="/" data-nav="accounts" title="Accounts" aria-label="Accounts"
+        ><i data-lucide="users"></i
+      ></a>
+      <a href="/metrics" data-nav="metrics" title="Metrics" aria-label="Metrics"
+        ><i data-lucide="activity"></i
+      ></a>
+      <a href="/history" data-nav="history" title="History" aria-label="History"
+        ><i data-lucide="history"></i
+      ></a>
+      <span class="rail-spacer"></span>
+      <a href="/proxies" data-nav="proxies" title="Proxies" aria-label="Proxies"
+        ><i data-lucide="network"></i
+      ></a>
+    </nav>
+
+    <main>
+      <section id="accounts-page" class="page hidden">
+        <div class="page-heading">
+          <div>
+            <p class="eyebrow">ANTHROPIC COMPATIBILITY</p>
+            <h1>Kiro account pool</h1>
+            <p>
+              Token lifecycle, credits and request routing in one local
+              workspace.
+            </p>
+          </div>
+          <div class="actions">
+            <button class="button" id="refresh-usage">
+              <i data-lucide="refresh-cw"></i><span>Refresh credits</span>
+            </button>
+            <button class="button" id="open-proxies">
+              <i data-lucide="network"></i><span>Manage proxies</span>
+            </button>
+            <button class="button" id="open-import">
+              <i data-lucide="import"></i><span>Bulk import</span>
+            </button>
+            <button class="button primary" id="new-account">
+              <i data-lucide="user-plus"></i><span>New account</span>
+            </button>
+          </div>
+        </div>
+        <div class="summary-grid" id="account-summary"><div class="summary-card skeleton"><span class="label">&nbsp;</span><strong></strong><small></small></div><div class="summary-card skeleton"><span class="label">&nbsp;</span><strong></strong><small></small></div><div class="summary-card skeleton"><span class="label">&nbsp;</span><strong></strong><small></small></div><div class="summary-card skeleton"><span class="label">&nbsp;</span><strong></strong><small></small></div></div>
+        <div class="endpoint setup-card">
+          <div class="setup-main">
+            <div class="setup-icon">&lt;/&gt;</div>
+            <div class="setup-copy">
+              <h3>Connect Claude Code</h3>
+              <p>
+                Copy the setup script, including API-key approval. Any non-empty
+                key is accepted.
+              </p>
+            </div>
+            <button class="button" id="copy-script">
+              <i data-lucide="copy"></i><span>Copy setup script</span>
+            </button>
+          </div>
+          <div class="setup-values">
+            <div>
+              <span>ANTHROPIC_BASE_URL</span><code id="setup-base-url"></code>
+            </div>
+            <div>
+              <span>ANTHROPIC_API_KEY</span
+              ><code>sk-ant-api03-dummykey123123123123</code>
+            </div>
+          </div>
+          <details class="setup-details">
+            <summary>View full setup script</summary>
+            <pre id="endpoint-script"></pre>
+          </details>
+        </div>
+        <div class="panel">
+          <div class="panel-heading">
+            <div>
+              <h2>Accounts</h2>
+              <span id="account-count"></span>
+            </div>
+          </div>
+          <div class="table-wrap">
+            <table class="fixed-table accounts-table">
+              <colgroup><col class="col-id" style="width:56px" /><col class="col-provider" style="width:112px" /><col class="col-token" style="width:128px" /><col class="col-priority" style="width:108px" /><col class="col-status" style="width:156px" /><col class="col-source" style="width:36%" /><col class="col-created" style="width:116px" /><col class="col-credits" style="width:44%" /><col class="col-proxy" style="width:20%" /><col class="col-actions" style="width:232px" /></colgroup>
+              <thead>
+                <tr>
+                  <th>ID</th>
+                  <th>Provider</th>
+                  <th>Token</th>
+                  <th>Priority</th>
+                  <th>Status</th>
+                  <th>Source</th>
+                  <th>Created</th>
+                  <th class="credit-column">Credits & usage</th>
+                  <th>Proxy</th>
+                  <th>Actions</th>
+                </tr>
+              </thead>
+              <tbody id="accounts-body"><tr class="loading-row"><td colspan="10"><span class="spinner"></span>Loading accounts…</td></tr></tbody>
+            </table>
+          </div>
+          <div id="accounts-empty" class="empty hidden">
+            <h3>No Kiro accounts yet</h3>
+            <p>
+              Paste a login export, nested account JSON, or a raw Kiro API key.
+              OAuth credentials are converted to fresh access tokens
+              automatically.
+            </p>
+            <div class="empty-actions">
+              <button class="button primary" data-open-import>
+                <i data-lucide="user-plus"></i
+                ><span>Import your first account</span>
+              </button>
+              <button class="button" data-open-bulk-import>
+                <i data-lucide="file-json"></i><span>Bulk import JSON</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section id="metrics-page" class="page hidden">
+        <div class="page-heading">
+          <div>
+            <p class="eyebrow">SQLITE REQUEST LOGS</p>
+            <h1>Performance metrics</h1>
+            <p>Live request metrics from local data.</p>
+          </div>
+          <div class="actions">
+            <div class="time-range-picker" id="metrics-time-range"></div>
+            <button class="button" id="refresh-metrics">
+              <i data-lucide="refresh-cw"></i><span>Refresh</span>
+            </button>
+          </div>
+        </div>
+        <div class="summary-grid" id="metrics-summary"><div class="summary-card skeleton"><span class="label">&nbsp;</span><strong></strong><small></small></div><div class="summary-card skeleton"><span class="label">&nbsp;</span><strong></strong><small></small></div><div class="summary-card skeleton"><span class="label">&nbsp;</span><strong></strong><small></small></div><div class="summary-card skeleton"><span class="label">&nbsp;</span><strong></strong><small></small></div></div>
+        <div class="panel chart-panel overview-panel">
+          <div class="chart-header">
+            <div>
+              <h2>Performance overview</h2>
+              <p>Request volume, estimated cost and average latency</p>
+            </div>
+            <span>Drag to select a time range</span>
+          </div>
+          <div class="chart overview loading" id="overview-chart"></div>
+        </div>
+        <div class="chart-grid">
+          <div class="panel chart-panel">
+            <div class="chart-header">
+              <div>
+                <h2>Estimated cost</h2>
+                <p>USD per time bucket</p>
+              </div>
+            </div>
+            <div class="chart loading" id="cost-chart"></div>
+          </div>
+          <div class="panel chart-panel">
+            <div class="chart-header">
+              <div>
+                <h2>Request outcomes</h2>
+                <p>Successful and failed requests</p>
+              </div>
+            </div>
+            <div class="chart loading" id="requests-chart"></div>
+          </div>
+          <div class="panel chart-panel">
+            <div class="chart-header">
+              <div>
+                <h2>Latency</h2>
+                <p>Total latency and time to first token</p>
+              </div>
+            </div>
+            <div class="chart loading" id="latency-chart"></div>
+          </div>
+          <div class="panel chart-panel">
+            <div class="chart-header">
+              <div>
+                <h2>Token usage</h2>
+                <p>Input, output and cached tokens</p>
+              </div>
+            </div>
+            <div class="chart loading" id="tokens-chart"></div>
+          </div>
+        </div>
+        <div class="metrics-model-grid">
+          <div class="panel chart-panel">
+            <div class="chart-header">
+              <div>
+                <h2>Model cost distribution</h2>
+                <p>Estimated USD stacked by model</p>
+              </div>
+            </div>
+            <div class="chart model-chart loading" id="model-cost-chart"></div>
+          </div>
+          <div class="panel model-table-panel">
+            <div class="panel-heading">
+              <div>
+                <h2>Cost by model</h2>
+                <span>Selected time range</span>
+              </div>
+            </div>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Model</th>
+                    <th>Requests</th>
+                    <th>Estimated USD</th>
+                    <th>Total tokens</th>
+                    <th>Avg latency</th>
+                  </tr>
+                </thead>
+                <tbody id="models-body"><tr class="loading-row"><td colspan="5"><span class="spinner"></span>Loading models…</td></tr></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section id="history-page" class="page hidden">
+        <div class="page-heading">
+          <div>
+            <p class="eyebrow">REQUEST HISTORY</p>
+            <h1>Usage history</h1>
+            <p>
+              Inspect consumption, token usage, cost, timing, and credits for
+              every request.
+            </p>
+          </div>
+          <div class="actions">
+            <div class="time-range-picker" id="history-time-range"></div>
+            <button class="button" id="refresh-history">
+              <i data-lucide="refresh-cw"></i><span>Refresh</span>
+            </button>
+          </div>
+        </div>
+        <div class="panel chart-panel overview-panel">
+          <div class="chart-header">
+            <div>
+              <h2>Usage over time</h2>
+              <p id="history-chart-meta">
+                Estimated USD consumption per time bucket
+              </p>
+            </div>
+            <span>Drag to select a time range</span>
+          </div>
+          <div class="chart overview loading" id="history-usage-chart"></div>
+        </div>
+        <div class="panel">
+          <div class="panel-heading">
+            <div>
+              <h2 id="history-details-title">Requests</h2>
+              <span id="history-total"></span>
+            </div>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th></th>
+                  <th>Date</th>
+                  <th>Model</th>
+                  <th>Estimated USD</th>
+                  <th>Consumed after</th>
+                  <th>Kiro credits</th>
+                </tr>
+              </thead>
+              <tbody id="history-body"><tr class="loading-row"><td colspan="6"><span class="spinner"></span>Loading requests…</td></tr></tbody>
+            </table>
+          </div>
+          <div id="history-empty" class="empty hidden">
+            <h3>No usage in this range</h3>
+            <p>
+              Choose another time range or make a request through the adapter.
+            </p>
+          </div>
+          <div class="pagination" id="history-pagination"></div>
+        </div>
+      </section>
+
+      <section id="proxies-page" class="page hidden">
+        <div class="page-heading">
+          <div>
+            <p class="eyebrow">OUTBOUND ROUTING</p>
+            <h1>Proxies</h1>
+            <p>HTTPS CONNECT and SOCKS5 with optional basic authentication.</p>
+          </div>
+          <button class="button primary" id="add-proxy">
+            <i data-lucide="plus"></i><span>Add proxy</span>
+          </button>
+        </div>
+        <div class="panel">
+          <div class="table-wrap">
+            <table class="fixed-table proxies-table">
+              <colgroup><col class="col-id" style="width:56px" /><col class="col-name" style="width:30%" /><col class="col-type" style="width:160px" /><col class="col-url" style="width:70%" /><col class="col-auth" style="width:150px" /><col class="col-actions" style="width:232px" /></colgroup>
+              <thead>
+                <tr>
+                  <th>ID</th>
+                  <th>Name</th>
+                  <th>Type</th>
+                  <th>URL</th>
+                  <th>Authentication</th>
+                  <th>Actions</th>
+                </tr>
+              </thead>
+              <tbody id="proxies-body"><tr class="loading-row"><td colspan="6"><span class="spinner"></span>Loading proxies…</td></tr></tbody>
+            </table>
+          </div>
+          <div id="proxies-empty" class="empty hidden">
+            <h3>No proxies configured</h3>
+            <p>
+              Accounts use their assigned proxy for inference, token refresh,
+              usage and MCP calls.
+            </p>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <dialog id="import-dialog" class="modal wide">
+      <form method="dialog" class="modal-heading">
+        <div>
+          <p class="eyebrow">AUTOMATIC TOKEN CONVERSION</p>
+          <h2 id="import-dialog-title">Bulk import Kiro accounts</h2>
+        </div>
+        <button class="icon-button" value="cancel" aria-label="Close">
+          <i data-lucide="x"></i>
+        </button>
+      </form>
+      <div class="modal-body">
+        <p class="muted">
+          Paste one credential, an accounts array, or a wrapped export. OAuth
+          accounts are refreshed before storage; API keys are used directly.
+        </p>
+        <label
+          >Credential JSON or raw API key<textarea
+            id="import-text"
+            rows="10"
+            spellcheck="false"
+            placeholder='{"accounts":[{"credentials":{"refreshToken":"...","provider":"Google"}}]}'
+          ></textarea>
+        </label>
+        <div class="form-row">
+          <div class="detected">
+            <div class="detected-head">
+              <span class="field-label">Detected accounts</span>
+              <span class="detected-count" id="detected-accounts">0</span>
+              <span class="detected-summary" id="detected-summary"></span>
+            </div>
+            <ul class="detected-list" id="detected-list" aria-label="Detected accounts"></ul>
+            <div id="parse-error" class="error-text" role="alert"></div>
+          </div>
+          <label
+            >Proxy assignment<select id="import-proxy-mode">
+              <option value="none">No proxy</option>
+              <option value="random_working">Random working proxy</option>
+            </select></label
+          >
+        </div>
+        <div id="import-progress" class="progress-note hidden">
+          Converting and importing credentials…
+        </div>
+        <pre id="import-result" class="result hidden"></pre>
+      </div>
+      <div class="modal-footer">
+        <button class="button" data-close="import-dialog">Cancel</button
+        ><button class="button primary" id="submit-import">
+          Convert & import
+        </button>
+      </div>
+    </dialog>
+
+    <dialog id="new-account-dialog" class="modal wide" aria-labelledby="new-account-title">
+      <form method="dialog" class="modal-heading">
+        <div>
+          <p class="eyebrow" id="new-account-step">Step 1 of 2</p>
+          <h2 id="new-account-title">Add a Kiro account</h2>
+        </div>
+        <button class="icon-button" value="cancel" aria-label="Close">
+          <i data-lucide="x"></i>
+        </button>
+      </form>
+      <div class="modal-body">
+        <!-- Step 1: choose how to sign in -->
+        <section id="na-choose" class="na-step">
+          <p class="muted">Sign in once and the adapter keeps the account's token fresh.</p>
+          <div class="method-grid" role="list">
+            <button class="method-card" data-method="kiro" role="listitem">
+              <span class="method-icon"><i data-lucide="log-in"></i></span>
+              <span class="method-text"><strong>Kiro sign-in</strong>
+                <small>Google, GitHub or your organization's sign-in, on Kiro's page.</small></span>
+              <span class="method-tag" data-loopback-tag>This machine only</span>
+            </button>
+            <button class="method-card" data-method="builder-id" role="listitem">
+              <span class="method-icon"><i data-lucide="key-round"></i></span>
+              <span class="method-text"><strong>AWS Builder ID</strong>
+                <small>Approve a short code in any browser, on any device.</small></span>
+            </button>
+            <button class="method-card" data-method="identity-center" role="listitem">
+              <span class="method-icon"><i data-lucide="building-2"></i></span>
+              <span class="method-text"><strong>IAM Identity Center</strong>
+                <small>Your company's AWS start URL (Kiro Enterprise).</small></span>
+              <span class="method-tag" data-loopback-tag>This machine only</span>
+            </button>
+            <button class="method-card" data-method="manual" role="listitem">
+              <span class="method-icon"><i data-lucide="clipboard-pen"></i></span>
+              <span class="method-text"><strong>Enter details</strong>
+                <small>A Kiro API key, or a refresh token you already have.</small></span>
+            </button>
+          </div>
+          <p class="muted small" id="na-loopback-note" hidden>
+            <i data-lucide="info"></i> Options marked “This machine only” need this dashboard
+            opened at <code>localhost</code> or <code>127.0.0.1</code>, because Kiro and AWS only
+            return to those addresses. You're on <code id="na-current-host"></code>.
+          </p>
+        </section>
+
+        <!-- Step 2a: region / start URL before a sign-in -->
+        <section id="na-configure" class="na-step" hidden>
+          <div class="form-grid">
+            <label id="na-starturl-field" class="span-2"
+              >Start URL<input id="na-starturl" type="url" inputmode="url"
+                placeholder="https://d-1234567890.awsapps.com/start" autocomplete="off" />
+              <span class="field-hint">From your AWS access portal. Ask your administrator if you don't know it.</span></label
+            ><label
+              >Region<select id="na-region"><option value="us-east-1" selected>us-east-1</option><option value="eu-central-1">eu-central-1</option><option value="eu-east-1">eu-east-1</option><option value="us-west-2">us-west-2</option><option value="eu-west-1">eu-west-1</option><option value="ap-southeast-1">ap-southeast-1</option><option value="ap-northeast-1">ap-northeast-1</option></select>
+              <span class="field-hint" id="na-region-hint">Where your sign-in lives. Most accounts use us-east-1.</span></label
+            >
+          </div>
+          <div class="error-text" id="na-configure-error" role="alert"></div>
+        </section>
+
+        <!-- Step 2b: waiting for the browser -->
+        <section id="na-waiting" class="na-step" hidden aria-live="polite">
+          <div class="signin-panel">
+            <div class="device-code" id="na-device" hidden>
+              <span class="field-label">Your code</span>
+              <strong id="na-user-code" class="mono"></strong>
+              <button class="button small" id="na-copy-code"><i data-lucide="copy"></i><span>Copy</span></button>
+            </div>
+            <p id="na-waiting-text">Finish signing in in the tab that just opened.</p>
+            <div class="signin-actions">
+              <a class="button primary" id="na-open-link" target="_blank" rel="noopener"
+                ><i data-lucide="external-link"></i><span>Open sign-in page</span></a
+              ><button class="button" id="na-copy-link"><i data-lucide="link"></i><span>Copy link</span></button>
+            </div>
+            <div class="signin-status"><span class="spinner"></span><span id="na-status-text">Waiting for you to finish…</span></div>
+          </div>
+        </section>
+
+        <!-- Step 2c: manual details form -->
+        <section id="na-manual" class="na-step" hidden>
+          <div class="segmented" role="radiogroup" aria-label="Credential type">
+            <label><input type="radio" name="na-kind" value="api_key" checked /><span>API key</span></label>
+            <label><input type="radio" name="na-kind" value="social" /><span>Google / GitHub token</span></label>
+            <label><input type="radio" name="na-kind" value="idc" /><span>Builder ID / Identity Center token</span></label>
+          </div>
+          <div class="form-grid" id="na-manual-fields">
+            <label class="span-2" data-kind="api_key"
+              >API key<input id="nm-api-key" type="password" autocomplete="off" spellcheck="false" placeholder="ksk_…" />
+              <span class="field-hint">Created in the Kiro web console under API keys.</span></label
+            ><label data-kind="social"
+              >Signed in with<select id="nm-provider"><option value="Google">Google</option><option value="Github">GitHub</option></select></label
+            ><label data-kind="idc"
+              >Sign-in type<select id="nm-idc-provider"><option value="BuilderId">AWS Builder ID</option><option value="Enterprise">IAM Identity Center</option></select></label
+            ><label class="span-2" data-kind="social idc"
+              >Refresh token<input id="nm-refresh" type="password" autocomplete="off" spellcheck="false" />
+              <span class="field-hint">A fresh access token is fetched for you when you add the account.</span></label
+            ><label data-kind="idc"
+              >Client ID<input id="nm-client-id" autocomplete="off" spellcheck="false" /></label
+            ><label data-kind="idc"
+              >Client secret<input id="nm-client-secret" type="password" autocomplete="off" spellcheck="false" /></label
+            ><label class="span-2" data-kind="idc" id="nm-starturl-field"
+              >Start URL<input id="nm-starturl" type="url" placeholder="https://d-1234567890.awsapps.com/start" autocomplete="off" /></label
+            ><label
+              >Region<select id="nm-region"><option value="us-east-1" selected>us-east-1</option><option value="eu-central-1">eu-central-1</option><option value="eu-east-1">eu-east-1</option><option value="us-west-2">us-west-2</option><option value="eu-west-1">eu-west-1</option><option value="ap-southeast-1">ap-southeast-1</option><option value="ap-northeast-1">ap-northeast-1</option></select></label
+            >
+          </div>
+          <p class="muted small">Have a file exported from another tool? Use
+            <button class="link-button" id="na-to-bulk">Bulk import</button> instead.</p>
+          <div class="error-text" id="na-manual-error" role="alert"></div>
+        </section>
+
+        <!-- Step 3: done -->
+        <section id="na-done" class="na-step" hidden aria-live="polite">
+          <div class="done-panel">
+            <span class="done-icon"><i data-lucide="check"></i></span>
+            <div>
+              <strong id="na-done-title">Account added</strong>
+              <p class="muted" id="na-done-text"></p>
+            </div>
+          </div>
+        </section>
+
+        <div id="na-settings-wrap">
+          <details class="account-settings" id="na-settings">
+            <summary>Pool settings</summary>
+            <div class="form-grid">
+              <label
+                >Priority<input id="na-priority" type="number" min="1" value="1" />
+                <span class="field-hint">Lower numbers are used first.</span></label
+              ><label
+                >Proxy<select id="na-proxy" data-proxy-select>
+                  <option value="">Direct / environment</option>
+                </select></label
+              ><label class="span-2"
+                >Note<input id="na-comment" placeholder="e.g. Personal, Team pool" /></label
+              >
+            </div>
+          </details>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="button" id="na-back" hidden><i data-lucide="arrow-left"></i><span>Back</span></button>
+        <span class="footer-spacer"></span>
+        <button class="button" data-close="new-account-dialog" id="na-cancel">Cancel</button
+        ><button class="button primary" id="na-primary" hidden>Continue</button>
+      </div>
+    </dialog>
+
+    <dialog id="account-dialog" class="modal wide" aria-labelledby="account-dialog-title">
+      <form method="dialog" class="modal-heading">
+        <div>
+          <p class="eyebrow" id="account-dialog-eyebrow">Account</p>
+          <h2 id="account-dialog-title">Account</h2>
+        </div>
+        <button class="icon-button" value="cancel" aria-label="Close">
+          <i data-lucide="x"></i>
+        </button>
+      </form>
+      <div class="modal-body">
+        <input type="hidden" id="edit-account-id" />
+        <div class="account-overview" id="edit-overview"></div>
+
+        <h3 class="section-title">Pool settings</h3>
+        <div class="form-grid">
+          <label
+            >Priority<input id="edit-priority" type="number" min="1" value="1" />
+            <span class="field-hint">Lower numbers are used first.</span></label
+          ><label
+            >Proxy<select id="edit-proxy" data-proxy-select>
+              <option value="">Direct / environment</option>
+            </select></label
+          ><label class="span-2"
+            >Note<input id="edit-comment" /></label
+          >
+        </div>
+        <label class="switch-row">
+          <span><strong>Use this account</strong><small id="edit-enabled-hint">Requests can be routed to this account.</small></span>
+          <input id="edit-enabled" type="checkbox" role="switch" />
+        </label>
+
+        <h3 class="section-title">Sign-in</h3>
+        <dl class="credential-facts" id="edit-credential-facts"></dl>
+        <div class="credential-actions">
+          <button class="button small" id="edit-refresh-token"><i data-lucide="refresh-cw"></i><span>Refresh token now</span></button>
+          <button class="button small" id="edit-test"><i data-lucide="play"></i><span>Send test request</span></button>
+        </div>
+        <details class="advanced" id="edit-advanced">
+          <summary>Advanced: edit raw credential</summary>
+          <p class="muted small">Only for fixing an imported credential. Changes replace what's stored.</p>
+          <textarea id="edit-credentials" rows="12" spellcheck="false" aria-label="Raw credential JSON"></textarea>
+          <label class="check-label"
+            ><input id="edit-convert" type="checkbox" /> Fetch a new access token when saving</label
+          >
+        </details>
+        <div id="edit-error" class="error-text" role="alert"></div>
+      </div>
+      <div class="modal-footer">
+        <button class="button danger" id="edit-delete"><i data-lucide="trash-2"></i><span>Delete</span></button>
+        <span class="footer-spacer"></span>
+        <button class="button" data-close="account-dialog">Cancel</button
+        ><button class="button primary" id="save-account">Save changes</button>
+      </div>
+    </dialog>
+
+    <dialog id="proxy-dialog" class="modal">
+      <form method="dialog" class="modal-heading">
+        <h2 id="proxy-dialog-title">Add proxy</h2>
+        <button class="icon-button" value="cancel" aria-label="Close">
+          <i data-lucide="x"></i>
+        </button>
+      </form>
+      <div class="modal-body">
+        <input type="hidden" id="proxy-id" /><label
+          >Name<input id="proxy-name" required /></label
+        ><label
+          >Type<select id="proxy-type">
+            <option value="HTTPS_CONNECT">HTTPS CONNECT</option>
+            <option value="SOCKS5">SOCKS5</option>
+          </select></label
+        ><label
+          >URL<input
+            id="proxy-url"
+            placeholder="http://127.0.0.1:7890"
+            required
+        /></label>
+        <div class="form-grid">
+          <label>Username<input id="proxy-username" autocomplete="off" /></label
+          ><label
+            >Password<input
+              id="proxy-password"
+              type="password"
+              autocomplete="new-password"
+          /></label>
+        </div>
+        <div id="proxy-error" class="error-text"></div>
+      </div>
+      <div class="modal-footer">
+        <button class="button" data-close="proxy-dialog">Cancel</button
+        ><button class="button primary" id="save-proxy">Save proxy</button>
+      </div>
+    </dialog>
+
+    <script src="/vendor/echarts.min.js"></script>
+    <script src="/vendor/lucide.min.js"></script>
+    <script src="/vendor/notyf.min.js"></script>
+    <script src="/app.js" type="module"></script>
+    <script src="/easter-egg/pacman.js" type="module"></script><!-- easter-egg -->
+  </body>
+</html>
