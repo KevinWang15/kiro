@@ -8,8 +8,6 @@ import {
 } from "./types.ts";
 import { renderToolReferences } from "./tool-references.ts";
 
-export type KiroThinkingTokenPercentRange = readonly [number, number];
-
 /**
  * Check if a character is a non-Western character (CJK, Arabic, etc.)
  *
@@ -128,66 +126,6 @@ export function estimateInputTokens(
   }
 
   return Math.max(total, 1);
-}
-
-/**
- * Add a uniformly random thinking-token percentage to Kiro's estimated output.
- */
-export type KiroThinkingTokenSimulationResult = {
-  originalOutputTokens: number;
-  randomPercent: number;
-  addedThinkingTokens: number;
-  finalOutputTokens: number;
-  status: "disabled" | "no_output" | "applied" | "skipped_unsafe";
-};
-
-export function calculateKiroThinkingTokenSimulation(
-  originalOutputTokens: number,
-  [low, upper]: KiroThinkingTokenPercentRange,
-  random: () => number = Math.random,
-): KiroThinkingTokenSimulationResult {
-  if (low === 0 && upper === 0) {
-    return {
-      originalOutputTokens,
-      randomPercent: 0,
-      addedThinkingTokens: 0,
-      finalOutputTokens: originalOutputTokens,
-      status: "disabled",
-    };
-  }
-
-  if (originalOutputTokens <= 0) {
-    return {
-      originalOutputTokens,
-      randomPercent: 0,
-      addedThinkingTokens: 0,
-      finalOutputTokens: originalOutputTokens,
-      status: "no_output",
-    };
-  }
-
-  const randomUnit = random();
-  const boundedRandomUnit = Number.isFinite(randomUnit)
-    ? Math.min(1, Math.max(0, randomUnit))
-    : 0;
-  const randomPercent = low + (upper - low) * boundedRandomUnit;
-  const candidateOutputTokens = Math.round(
-    originalOutputTokens * (1 + randomPercent / 100),
-  );
-  const isSafe =
-    Number.isSafeInteger(candidateOutputTokens) &&
-    candidateOutputTokens >= originalOutputTokens;
-  const finalOutputTokens = isSafe
-    ? candidateOutputTokens
-    : originalOutputTokens;
-
-  return {
-    originalOutputTokens,
-    randomPercent,
-    addedThinkingTokens: finalOutputTokens - originalOutputTokens,
-    finalOutputTokens,
-    status: isSafe ? "applied" : "skipped_unsafe",
-  };
 }
 
 // Explicit 200K Claude models from https://kiro.dev/docs/models/.

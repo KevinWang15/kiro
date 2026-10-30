@@ -18,27 +18,4 @@ export const config = {
   refreshIntervalMs: 60 * 1000,
   usageIntervalMs: 2 * 60 * 1000,
   requestTimeoutMs: 10 * 60 * 1000,
-  thinkingTokenPercentRange: parseThinkingRange(
-    process.env.KIRO_THINKING_TOKEN_PERCENT_RANGE || "[0,0]",
-  ),
 };
-
-export function parseThinkingRange(raw: string): readonly [number, number] {
-  try {
-    const parsed = JSON.parse(raw);
-    if (
-      Array.isArray(parsed) &&
-      parsed.length === 2 &&
-      parsed.every(
-        (value) =>
-          typeof value === "number" && Number.isFinite(value) && value >= 0,
-      ) &&
-      parsed[0] <= parsed[1]
-    ) {
-      return [parsed[0], parsed[1]];
-    }
-  } catch {
-    // Use the disabled default for malformed local configuration.
-  }
-  return [0, 0];
-}

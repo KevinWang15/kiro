@@ -13,7 +13,6 @@ import {
 import { EventStreamDecoder, parseEventPayload } from "./parser.ts";
 import { convertRequest, overrideThinkingFromModelName } from "./converter.ts";
 import {
-  calculateKiroThinkingTokenSimulation,
   calculateTotalContextTokens,
   estimateInputTokens,
   estimateTokens,
@@ -27,7 +26,6 @@ import { sseEventToString, StreamContext } from "./stream.ts";
 import { getConversationId, splitThinking } from "./utils.ts";
 import { calculateClaudeCost } from "../usage/pricing.ts";
 import { getKiroRuntimeHost } from "./constants.ts";
-import { config } from "../config.ts";
 import { isExternalIdpAccount } from "../accounts/credential-utils.ts";
 import { createToolNameMap } from "./tool-names.ts";
 
@@ -640,20 +638,6 @@ export default class KiroApiProviderHandler {
     }
 
     inputTokens = Math.max(1, inputTokens);
-    const thinkingTokenRange = config.thinkingTokenPercentRange;
-    const thinkingTokenSimulation = calculateKiroThinkingTokenSimulation(
-      outputTokens,
-      thinkingTokenRange,
-    );
-    outputTokens = thinkingTokenSimulation.finalOutputTokens;
-
-    // Server-side only: no simulation metadata is added to response content or headers.
-    if (thinkingTokenRange[0] !== 0 || thinkingTokenRange[1] !== 0) {
-      const sampledPercent = thinkingTokenSimulation.randomPercent;
-      console.info(
-        `[KiroTokenEstimation] thinking-token simulation range=[${thinkingTokenRange[0]},${thinkingTokenRange[1]}]% sampled=${sampledPercent}% formula=round(${thinkingTokenSimulation.originalOutputTokens}*(1+${sampledPercent}/100)) original_output_tokens=${thinkingTokenSimulation.originalOutputTokens} added_thinking_tokens=${thinkingTokenSimulation.addedThinkingTokens} final_output_tokens=${thinkingTokenSimulation.finalOutputTokens} status=${thinkingTokenSimulation.status}`,
-      );
-    }
 
     const costBreakdown = calculateClaudeCost(requestBody.model, {
       input_tokens: inputTokens,
