@@ -46,6 +46,12 @@ export function eventFrame(
   return message;
 }
 
+export function reasoningFrame(payload: { text?: string; signature?: string }): Buffer {
+  return eventFrame(payload, [
+    { name: ":event-type", value: "reasoningContentEvent" },
+  ]);
+}
+
 export function meteringFrame(credits = 0.25): Buffer {
   return eventFrame({ usage: credits }, [
     { name: ":event-type", value: "meteringEvent" },

@@ -65,6 +65,11 @@ export class SseStateManager {
       : false;
   }
 
+  /** Whether any content block was started. */
+  hasBlocks(): boolean {
+    return this.activeBlocks.size > 0;
+  }
+
   /**
    * Check if we have any non-thinking blocks
    */
@@ -250,12 +255,24 @@ export class StreamContext {
   private toolBlockIndices = new Map<string, number>();
   private stripThinkingLeadingNewline = false;
 
-  constructor(model: string, inputTokens: number, thinkingEnabled: boolean) {
+  // Reasoning Kiro sends as reasoningContentEvent frames
+  private reasoningBlockIndex: number | null = null;
+  private reasoningHasDelta = false;
+  private readonly showReasoning: boolean;
+
+  constructor(
+    model: string,
+    inputTokens: number,
+    thinkingEnabled: boolean,
+    thinkingDisplay?: string,
+  ) {
     this.stateManager = new SseStateManager();
     this.model = model;
     this.messageId = `msg_${uuidv4().replace(/-/g, "")}`;
     this.inputTokens = inputTokens;
     this.thinkingEnabled = thinkingEnabled;
+    // display "omitted" means thinking blocks carry only the signature.
+    this.showReasoning = thinkingDisplay !== "omitted";
   }
 
   /**
@@ -291,26 +308,8 @@ export class StreamContext {
     const handled = this.stateManager.handleMessageStart(msgStart);
     if (handled) events.push(handled);
 
-    // If thinking enabled, don't create text block yet
-    // It will be created after thinking block is processed
-    if (this.thinkingEnabled) {
-      return events;
-    }
-
-    // Create initial text block
-    const textIndex = this.stateManager.getNextBlockIndex();
-    this.textBlockIndex = textIndex;
-    const blockEvents = this.stateManager.handleContentBlockStart(
-      textIndex,
-      "text",
-      {
-        type: "content_block_start",
-        index: textIndex,
-        content_block: { type: "text", text: "" },
-      },
-    );
-    events.push(...blockEvents);
-
+    // Content blocks open when their first content arrives, so a thinking
+    // block from Kiro's reasoning frames can come first.
     return events;
   }
 
@@ -319,10 +318,15 @@ export class StreamContext {
    */
   processKiroEvent(event: KiroEvent, modifiedModel: string): SseEvent[] {
     switch (event.type) {
+      case "reasoning":
+        return this.processReasoning(event.text, event.signature);
       case "assistantResponse":
-        return this.processAssistantResponse(event.content);
+        return [
+          ...this.closeReasoningBlock(),
+          ...this.processAssistantResponse(event.content),
+        ];
       case "toolUse":
-        return this.processToolUse(event.data);
+        return [...this.closeReasoningBlock(), ...this.processToolUse(event.data)];
       case "contextUsage":
         // Calculate actual input tokens from percentage
         const actualInputTokens = calculateTotalContextTokens(
@@ -341,6 +345,68 @@ export class StreamContext {
       default:
         return [];
     }
+  }
+
+  /**
+   * Reasoning frames become a thinking block. Text pieces are streamed as
+   * thinking_delta unless the client asked for display "omitted"; the
+   * signature closes the block.
+   */
+  private processReasoning(text: string, signature?: string): SseEvent[] {
+    // Kiro reasons even when thinking wasn't requested. Such a client gets
+    // no thinking block, as from the real API (pings still show progress).
+    if (!this.thinkingEnabled) {
+      this.outputTokens += estimateTokens(text);
+      return [];
+    }
+    const events: SseEvent[] = [];
+    if (this.reasoningBlockIndex === null) {
+      // Thinking that follows text (e.g. between tool calls) gets its own block.
+      if (this.textBlockIndex !== null) {
+        const stop = this.stateManager.handleContentBlockStop(this.textBlockIndex);
+        if (stop) events.push(stop);
+        this.textBlockIndex = null;
+      }
+      const index = this.stateManager.getNextBlockIndex();
+      this.reasoningBlockIndex = index;
+      this.reasoningHasDelta = false;
+      events.push(
+        ...this.stateManager.handleContentBlockStart(index, "thinking", {
+          type: "content_block_start",
+          index,
+          content_block: { type: "thinking", thinking: "", signature: "" },
+        }),
+      );
+    }
+    const index = this.reasoningBlockIndex;
+    if (text) {
+      this.outputTokens += estimateTokens(text);
+      if (this.showReasoning) {
+        events.push(this.createThinkingDeltaEvent(index, text));
+        this.reasoningHasDelta = true;
+      }
+    }
+    if (signature) {
+      if (!this.reasoningHasDelta) {
+        events.push(this.createThinkingDeltaEvent(index, ""));
+      }
+      const delta = this.stateManager.handleContentBlockDelta(index, {
+        type: "content_block_delta",
+        index,
+        delta: { type: "signature_delta", signature },
+      });
+      if (delta) events.push(delta);
+      events.push(...this.closeReasoningBlock());
+    }
+    return events;
+  }
+
+  /** Close an open thinking block (answer text or a tool call started). */
+  private closeReasoningBlock(): SseEvent[] {
+    if (this.reasoningBlockIndex === null) return [];
+    const stop = this.stateManager.handleContentBlockStop(this.reasoningBlockIndex);
+    this.reasoningBlockIndex = null;
+    return stop ? [stop] : [];
   }
 
   /**
@@ -707,13 +773,12 @@ export class StreamContext {
       this.thinkingBuffer = "";
     }
 
-    // If only thinking was produced, add empty text block so content array isn't empty
-    if (
-      this.thinkingEnabled &&
-      this.thinkingBlockIndex !== null &&
-      !this.stateManager.hasNonThinkingBlocks()
-    ) {
-      events.push(...this.createTextDeltaEvents(" "));
+    events.push(...this.closeReasoningBlock());
+
+    // Only thinking (or nothing) was produced: add a text block so the
+    // reply still has an answer block.
+    if (!this.stateManager.hasNonThinkingBlocks()) {
+      events.push(...this.createTextDeltaEvents(this.stateManager.hasBlocks() ? " " : ""));
     }
 
     // Generate final events with correct input tokens

@@ -4,6 +4,7 @@ import * as os from "os";
 import type { ProviderExtraConfig } from "./provider.ts";
 import {
   isThinkingEnabled,
+  resolveThinkingDisplay,
   type KiroEvent,
   type KiroRequest,
   type MessagesRequest,
@@ -87,6 +88,10 @@ function getKiroFailureMessage(
   const details = event.message ? `: ${event.message}` : "";
   return `Kiro upstream exception ${event.exceptionType}${details}`;
 }
+
+// Longest the client goes without an SSE event while Kiro is still sending
+// frames it can't see.
+const PING_AFTER_MS = 5_000;
 
 // Kiro sends a meteringEvent (the credits charged) as the last frame of every
 // finished reply. When it is missing, Kiro closed the stream early: seen near
@@ -423,6 +428,8 @@ export default class KiroApiProviderHandler {
     modifiedRequestBody: KiroRequest,
   ): Promise<KiroAnalysisResult> {
     let textContent = "";
+    let reasoningText = "";
+    let reasoningSignature = "";
     const toolUses: KiroToolUse[] = [];
     let hasToolUse = false;
     let stopReason = "end_turn";
@@ -435,6 +442,11 @@ export default class KiroApiProviderHandler {
       switch (event.type) {
         case "assistantResponse":
           textContent += event.content;
+          break;
+
+        case "reasoning":
+          reasoningText += event.text;
+          if (event.signature) reasoningSignature = event.signature;
           break;
 
         case "toolUse": {
@@ -495,6 +507,20 @@ export default class KiroApiProviderHandler {
     // Return it as a separate thinking block, like the streaming path does,
     // instead of leaving the tags inside the answer text.
     const content: Array<Record<string, unknown>> = [];
+    if (
+      isThinkingEnabled(requestBody.thinking) &&
+      (reasoningText || reasoningSignature)
+    ) {
+      content.push({
+        type: "thinking",
+        thinking:
+          resolveThinkingDisplay(requestBody.model, requestBody.thinking) ===
+          "omitted"
+            ? ""
+            : reasoningText,
+        signature: reasoningSignature,
+      });
+    }
     const { thinking, text: answerText } = isThinkingEnabled(requestBody.thinking)
       ? splitThinking(textContent)
       : { thinking: "", text: textContent };
@@ -549,7 +575,7 @@ export default class KiroApiProviderHandler {
       );
     }
 
-    const outputTextEst = estimateTokens(textContent);
+    const outputTextEst = estimateTokens(textContent + reasoningText);
     const outputToolEst = toolUses.reduce(
       (sum, tu) => sum + estimateTokens(JSON.stringify(tu.input)),
       0,
@@ -684,21 +710,20 @@ export default class KiroApiProviderHandler {
       requestBody.model,
       estimatedInputTokens,
       thinkingEnabled,
+      resolveThinkingDisplay(requestBody.model, requestBody.thinking),
     );
     const events: KiroEvent[] = [];
-    let initialEventsGenerated = false;
+    let lastWriteAt = Date.now();
 
     const emitSseEvent = async (event: SseEvent): Promise<void> => {
+      lastWriteAt = Date.now();
       await sink.onChunk(sseEventToString(event));
     };
 
-    const ensureInitialEvents = async (): Promise<void> => {
-      if (initialEventsGenerated) return;
-      initialEventsGenerated = true;
-      for (const event of ctx.generateInitialEvents()) {
-        await emitSseEvent(event);
-      }
-    };
+    // Kiro has answered (HTTP 200), so the message has started.
+    for (const event of ctx.generateInitialEvents()) {
+      await emitSseEvent(event);
+    }
 
     for await (const chunk of responseStream) {
       decoder.feed(Buffer.from(chunk));
@@ -723,14 +748,20 @@ export default class KiroApiProviderHandler {
         }
 
         events.push(event);
-        await ensureInitialEvents();
 
-        for (const sseEvent of ctx.processKiroEvent(
+        const sseEvents = ctx.processKiroEvent(
           event,
           modifiedRequestBody.conversationState.currentMessage.userInputMessage
             .modelId,
-        )) {
+        );
+        for (const sseEvent of sseEvents) {
           await emitSseEvent(sseEvent);
+        }
+        // Kiro is sending something the client doesn't see (e.g. reasoning
+        // with display "omitted"). Say so with a ping. Pings only follow
+        // real Kiro frames: if Kiro goes quiet, so does the client.
+        if (!sseEvents.length && Date.now() - lastWriteAt >= PING_AFTER_MS) {
+          await emitSseEvent({ event: "ping", data: { type: "ping" } });
         }
       }
     }
@@ -752,7 +783,6 @@ export default class KiroApiProviderHandler {
       requestBody,
       modifiedRequestBody,
     );
-    await ensureInitialEvents();
 
     const finalEvents = ctx.generateFinalEvents();
     for (const sseEvent of finalEvents) {

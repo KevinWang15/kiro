@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { convertRequest } from "../src/kiro/converter.ts";
-import type { MessagesRequest } from "../src/kiro/types.ts";
+import { resolveThinkingDisplay, type MessagesRequest } from "../src/kiro/types.ts";
 import {
   calculateTotalContextTokens,
   estimateTokens,
@@ -16,7 +16,7 @@ import {
 } from "../src/kiro/cache-simulation.ts";
 import { calculateClaudeCost } from "../src/usage/pricing.ts";
 import KiroApiProviderHandler, { stripBillingHeaderCch } from "../src/kiro/handler.ts";
-import { eventFrame, meteringFrame, successfulKiroStream } from "./helpers.ts";
+import { eventFrame, meteringFrame, reasoningFrame, successfulKiroStream } from "./helpers.ts";
 
 const user = (content: any) => ({ role: "user", content });
 const assistant = (content: any) => ({ role: "assistant", content });
@@ -369,4 +369,121 @@ test("a thinking tag mentioned mid-answer never hides the rest of the answer", a
   assert.equal(splitThinking("The model emits <thinking> tags when reasoning.").thinking, "");
   // Real replies still split, including Kiro's leading blank lines.
   assert.deepEqual(splitThinking("\n\n<thinking>\n144\n</thinking>\n\n12 squared is 144."), { thinking: "144\n", text: "12 squared is 144." });
+});
+
+// Kiro streams Opus reasoning as reasoningContentEvent frames: text pieces,
+// then a signature. They become a thinking block with that signature.
+const reasoningReply = () => Buffer.concat([
+  reasoningFrame({ text: "17 × 23 = 391, " }),
+  reasoningFrame({ text: "so not prime." }),
+  reasoningFrame({ signature: "SIG123" }),
+  eventFrame({ content: "No, 391 is not prime." }),
+  eventFrame({ contextUsagePercentage: 1 }), meteringFrame(),
+]);
+
+async function streamEvents(request: MessagesRequest, bytes: Buffer | Buffer[], onChunk?: (c: string) => void) {
+  const handler = new KiroApiProviderHandler(new CacheSimulator(new InMemoryCacheStore(new MockClock(0))));
+  let sse = "";
+  async function* chunks() { for (const b of Array.isArray(bytes) ? bytes : [bytes]) yield b; }
+  await handler.streamResponse(chunks(), request, convertRequest(request), { onChunk: (c) => { sse += c; onChunk?.(c); } });
+  return sse.split("\n").filter((l) => l.startsWith("data: ")).map((l) => JSON.parse(l.slice(6)));
+}
+
+for (const display of ["summarized", "omitted"]) {
+  test(`Kiro reasoning frames stream as a signed thinking block (display ${display})`, async () => {
+    const request = { model: "claude-opus-5-5", stream: true, thinking: { type: "adaptive", display }, messages: [user("Is 391 prime?")] } as MessagesRequest;
+    const events = await streamEvents(request, reasoningReply());
+    assert.deepEqual(events.slice(0, 2).map((e) => e.type), ["message_start", "content_block_start"]);
+    assert.equal(events[1].content_block.type, "thinking");
+    const thinking = events.filter((e) => e.index === 0 && e.delta?.type === "thinking_delta").map((e) => e.delta.thinking);
+    assert.deepEqual(thinking, display === "omitted" ? [""] : ["17 × 23 = 391, ", "so not prime."]);
+    assert.deepEqual(events.filter((e) => e.delta?.type === "signature_delta").map((e) => [e.index, e.delta.signature]), [[0, "SIG123"]]);
+    // signature_delta is the last delta of the block, then it closes, then the answer
+    const order = events.filter((e) => e.index !== undefined).map((e) => `${e.index}:${e.delta?.type ?? e.type}`);
+    assert.deepEqual(order.slice(order.indexOf("0:signature_delta")), ["0:signature_delta", "0:content_block_stop", "1:content_block_start", "1:text_delta", "1:content_block_stop"]);
+  });
+}
+
+test("Kiro reasoning comes back as a signed thinking block (non-streaming)", async () => {
+  for (const display of ["summarized", "omitted"]) {
+    const request = { model: "claude-opus-5-5", thinking: { type: "adaptive", display }, messages: [user("Is 391 prime?")] } as MessagesRequest;
+    const handler = new KiroApiProviderHandler(new CacheSimulator(new InMemoryCacheStore(new MockClock(0))));
+    const out = await handler.transformResponseBody(200, reasoningReply(), request, convertRequest(request));
+    assert.deepEqual((out.body as any).content, [
+      { type: "thinking", thinking: display === "omitted" ? "" : "17 × 23 = 391, so not prime.", signature: "SIG123" },
+      { type: "text", text: "No, 391 is not prime." },
+    ]);
+  }
+});
+
+test("message_start goes out before Kiro's first frame", async () => {
+  const request = { model: "claude-opus-5-5", stream: true, messages: [user("hi")] } as MessagesRequest;
+  const handler = new KiroApiProviderHandler(new CacheSimulator(new InMemoryCacheStore(new MockClock(0))));
+  const written: string[] = [];
+  let release!: () => void;
+  const gate = new Promise<void>((r) => (release = r));
+  async function* chunks() { await gate; yield Buffer.concat([eventFrame({ content: "Hi" }), meteringFrame()]); }
+  const done = handler.streamResponse(chunks(), request, convertRequest(request), { onChunk: (c) => { written.push(c); } });
+  await new Promise((r) => setImmediate(r));
+  assert.match(written.join(""), /^event: message_start\n/);
+  release();
+  await done;
+});
+
+test("pings only follow real Kiro frames the client can't see", async () => {
+  const request = { model: "claude-opus-5-5", stream: true, thinking: { type: "adaptive", display: "omitted" }, messages: [user("x")] } as MessagesRequest;
+  const realNow = Date.now;
+  let now = 1_000_000;
+  Date.now = () => now;
+  try {
+    // 6 reasoning frames 3s apart = 15s of hidden reasoning.
+    const frames = [...Array(6)].map((_, i) => reasoningFrame({ text: `step ${i} ` }));
+    async function* chunks() {
+      for (const f of frames) { now += 3000; yield f; }
+      now += 3000; yield reasoningFrame({ signature: "S" });
+      yield Buffer.concat([eventFrame({ content: "done" }), meteringFrame()]);
+    }
+    const handler = new KiroApiProviderHandler(new CacheSimulator(new InMemoryCacheStore(new MockClock(0))));
+    let sse = "";
+    await handler.streamResponse(chunks(), request, convertRequest(request), { onChunk: (c) => { sse += c; } });
+    const types = sse.split("\n").filter((l) => l.startsWith("event: ")).map((l) => l.slice(7));
+    // The first frame opens the thinking block; after that the hidden text
+    // frames produce a ping at most every 5s (at 6s and 12s), never more.
+    assert.equal(types.filter((t) => t === "ping").length, 2);
+  } finally {
+    Date.now = realNow;
+  }
+  // No frames, no pings: a silent Kiro stays silent.
+  const events = await streamEvents({ model: "claude-opus-5-5", stream: true, messages: [user("x")] } as MessagesRequest, Buffer.concat([eventFrame({ content: "ok" }), meteringFrame()]));
+  assert.equal(events.filter((e) => e.type === "ping").length, 0);
+});
+
+test("without thinking requested, Kiro's reasoning frames are not returned", async () => {
+  const request = { model: "claude-opus-5-5", stream: true, messages: [user("Is 391 prime?")] } as MessagesRequest;
+  const events = await streamEvents(request, reasoningReply());
+  assert.deepEqual(events.filter((e) => e.type === "content_block_start").map((e) => e.content_block.type), ["text"]);
+  const handler = new KiroApiProviderHandler(new CacheSimulator(new InMemoryCacheStore(new MockClock(0))));
+  const nonStream = { ...request, stream: false } as MessagesRequest;
+  const out = await handler.transformResponseBody(200, reasoningReply(), nonStream, convertRequest(nonStream));
+  assert.deepEqual((out.body as any).content, [{ type: "text", text: "No, 391 is not prime." }]);
+});
+
+test("thinking display defaults follow the model, as on the real API", () => {
+  const omitted = ["claude-opus-5-5", "claude-opus-5.5", "claude-sonnet-5", "claude-fable-5-1", "claude-haiku-5-5", "claude-opus-4-7", "claude-opus-4-8", "claude-mythos-preview"];
+  const summarized = ["claude-opus-4-6", "claude-sonnet-4-6", "claude-sonnet-4-5-20250929", "claude-haiku-4-5-20251001", "claude-opus-4-5-20251101"];
+  for (const m of omitted) assert.equal(resolveThinkingDisplay(m, { type: "adaptive" } as any), "omitted", m);
+  for (const m of summarized) assert.equal(resolveThinkingDisplay(m, { type: "adaptive" } as any), "summarized", m);
+  // What the client asked for always wins.
+  assert.equal(resolveThinkingDisplay("claude-opus-5-5", { type: "adaptive", display: "summarized" } as any), "summarized");
+  assert.equal(resolveThinkingDisplay("claude-sonnet-4-5", { type: "enabled", display: "omitted" } as any), "omitted");
+});
+
+test("Opus 5.5 without display gets omitted thinking, like the real API", async () => {
+  const request = { model: "claude-opus-5-5", stream: true, thinking: { type: "adaptive" }, messages: [user("Is 391 prime?")] } as MessagesRequest;
+  const events = await streamEvents(request, reasoningReply());
+  assert.deepEqual(events.filter((e) => e.delta?.type === "thinking_delta").map((e) => e.delta.thinking), [""]);
+  const handler = new KiroApiProviderHandler(new CacheSimulator(new InMemoryCacheStore(new MockClock(0))));
+  const nonStream = { ...request, stream: false } as MessagesRequest;
+  const out = await handler.transformResponseBody(200, reasoningReply(), nonStream, convertRequest(nonStream));
+  assert.equal((out.body as any).content[0].thinking, "");
 });

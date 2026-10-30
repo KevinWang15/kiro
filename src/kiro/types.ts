@@ -51,6 +51,8 @@ export const MAX_BUDGET_TOKENS = 24576;
 export interface ThinkingConfig {
   type: string;
   budget_tokens: number;
+  /** "omitted" asks for thinking blocks without their text. */
+  display?: string;
 }
 
 /**
@@ -61,6 +63,26 @@ export function isThinkingEnabled(
 ): boolean {
   if (!thinking) return false;
   return thinking.type === "enabled" || thinking.type === "adaptive";
+}
+
+/**
+ * The thinking display the client gets: what it asked for, else the model's
+ * default. Per the Anthropic docs, "omitted" is the default on Claude 5
+ * models, Opus 4.7/4.8 and Mythos; older models default to "summarized".
+ */
+export function resolveThinkingDisplay(
+  model: string,
+  thinking: ThinkingConfig | undefined,
+): string {
+  if (thinking?.display) return thinking.display;
+  const name = model.toLowerCase();
+  if (name.includes("mythos")) return "omitted";
+  const match = /claude-[a-z]+-(\d+)(?:[-.](\d{1,2})(?!\d))?/.exec(name);
+  if (!match) return "summarized";
+  const major = Number(match[1]);
+  const minor = Number(match[2] ?? 0);
+  const omitted = major >= 5 || (major === 4 && minor >= 7 && name.includes("opus"));
+  return omitted ? "omitted" : "summarized";
 }
 
 export interface OutputConfig {
@@ -179,6 +201,7 @@ export interface AssistantResponseMessage {
 export type KiroEvent =
   | { type: "assistantResponse"; content: string }
   | { type: "toolUse"; data: ToolUseEvent }
+  | { type: "reasoning"; text: string; signature?: string }
   | { type: "contextUsage"; data: { percentage: number } }
   | { type: "creditConsumption"; data: { amount: number } }
   | { type: "error"; errorCode: string; errorMessage: string }

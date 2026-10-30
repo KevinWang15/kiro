@@ -565,7 +565,12 @@ export class KiroAccountPool {
               onChunk: async (chunk: string) => {
                 if (options.abortSignal?.aborted)
                   throw new Error("Request canceled");
-                if (ttftMs === undefined) ttftMs = Date.now() - startedAt;
+                // TTFT is the first content, not message_start or a ping.
+                if (
+                  ttftMs === undefined &&
+                  chunk.startsWith("event: content_block_delta")
+                )
+                  ttftMs = Date.now() - startedAt;
                 await options.sink!.onChunk(chunk);
               },
             },

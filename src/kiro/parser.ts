@@ -486,6 +486,21 @@ export function parseEventPayload(
     }
   }
 
+  // Kiro streams the model's reasoning as reasoningContentEvent frames:
+  // {"text": "..."} pieces, then one {"signature": "..."}.
+  if (eventType === "reasoningContentEvent") {
+    try {
+      const data = JSON.parse(text);
+      return {
+        type: "reasoning",
+        text: typeof data.text === "string" ? data.text : "",
+        ...(typeof data.signature === "string" ? { signature: data.signature } : {}),
+      };
+    } catch {
+      return null;
+    }
+  }
+
   // For 'event' message type (and default), payload is JSON
   try {
     const data = JSON.parse(text);
