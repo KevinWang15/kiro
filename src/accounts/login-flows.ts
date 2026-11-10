@@ -11,6 +11,7 @@ import axios from "axios";
 import crypto from "node:crypto";
 import { config } from "../config.ts";
 import { buildAgentFromProxy } from "../proxy.ts";
+import { USAGE_API_KIRO_VERSION } from "../kiro/version.ts";
 import type { KiroCredentials, ProxyRecord } from "./types.ts";
 
 export const KIRO_SCOPES = [
@@ -25,7 +26,6 @@ export const KIRO_SIGNIN_URL = "https://app.kiro.dev/signin";
 export const CALLBACK_PATH = "/oauth/callback";
 /** Paths Kiro's sign-in portal may return to under the redirect origin. */
 export const PORTAL_CALLBACK_PATHS = ["/", "/oauth/callback", "/signin/callback"];
-const KIRO_VERSION = "0.9.2";
 const SESSION_TTL_MS = 15 * 60 * 1000;
 const REGION_PATTERN = /^[a-z]{2}(-[a-z]+)+-\d+$/;
 
@@ -152,13 +152,13 @@ function upstreamError(prefix: string, response: { status: number; data: any }):
 async function resolveProfile(accessToken: string, refreshToken: string, authRegion: string, proxy: ProxyRecord | null) {
   const fallback = authRegion.startsWith("eu-") ? "eu-central-1" : "us-east-1";
   const machineId = crypto.createHash("sha256").update(`KotlinNativeAPI/${refreshToken}`).digest("hex");
-  const suffix = `KiroIDE-${KIRO_VERSION}-${machineId}`;
+  const suffix = `KiroIDE-${USAGE_API_KIRO_VERSION}-${machineId}`;
   for (const region of [...new Set([fallback, "us-east-1", "eu-central-1"])]) {
     try {
       const response = await post(`${profilesBase(region)}/ListAvailableProfiles`, {}, proxy, false, {
         Authorization: `Bearer ${accessToken}`,
-        "x-amz-user-agent": `aws-sdk-js/1.0.27 ${suffix}`,
-        "user-agent": `aws-sdk-js/1.0.27 ua/2.1 os/${process.platform} lang/js md/nodejs#${process.version.slice(1)} api/codewhispererstreaming#1.0.27 m/E ${suffix}`,
+        "x-amz-user-agent": `aws-sdk-js/1.0.0 ${suffix}`,
+        "user-agent": `aws-sdk-js/1.0.0 ua/2.1 os/${process.platform} lang/js md/nodejs#${process.version.slice(1)} api/codewhispererruntime#1.0.0 m/N,E ${suffix}`,
         "amz-sdk-invocation-id": crypto.randomUUID(),
         "amz-sdk-request": "attempt=1; max=1",
       });

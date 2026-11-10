@@ -8,6 +8,7 @@ import {
   getSystemRuntimeInfo,
 } from "../kiro/handler.ts";
 import { getKiroRuntimeBaseUrl } from "../kiro/constants.ts";
+import { USAGE_API_KIRO_VERSION } from "../kiro/version.ts";
 import { config } from "../config.ts";
 import { isApiKeyAccount } from "./token-manager.ts";
 import type { AccountRepository } from "./repository.ts";
@@ -16,8 +17,6 @@ import type { TokenManager } from "./token-manager.ts";
 import type { KiroCredentials, KiroStatusInfo, ProxyRecord } from "./types.ts";
 import { parseCredentials } from "./types.ts";
 import { isSocialLoginAccount } from "./credential-utils.ts";
-
-const KIRO_VERSION = "0.9.2";
 
 interface UsageBreakdown {
   currentUsage: number;
@@ -144,8 +143,8 @@ async function fetchCbor(
           "smithy-protocol": "rpc-v2-cbor",
           authorization: `Bearer ${token}`,
           cookie: `Idp=${provider}; AccessToken=${token}`,
-          "x-amz-user-agent": `aws-sdk-js/1.0.27 KiroIDE-${KIRO_VERSION}-${machineId}`,
-          "user-agent": `aws-sdk-js/1.0.27 ua/2.1 os/${osName} lang/js md/nodejs#${nodeVersion} api/codewhispererstreaming#1.0.27 m/E KiroIDE-${KIRO_VERSION}-${machineId}`,
+          "x-amz-user-agent": `aws-sdk-js/1.0.0 KiroIDE-${USAGE_API_KIRO_VERSION}-${machineId}`,
+          "user-agent": `aws-sdk-js/1.0.0 ua/2.1 os/${osName} lang/js md/nodejs#${nodeVersion} api/codewhispererruntime#1.0.0 m/N,E KiroIDE-${USAGE_API_KIRO_VERSION}-${machineId}`,
           "amz-sdk-invocation-id": uuidv4(),
           "amz-sdk-request": "attempt=1; max=1",
         },

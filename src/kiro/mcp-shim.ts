@@ -4,6 +4,7 @@ import * as crypto from "node:crypto";
 import * as os from "node:os";
 import { buildAgentFromProxy } from "../proxy.ts";
 import { getKiroRuntimeBaseUrl, getKiroRuntimeHost } from "./constants.ts";
+import { effectiveKiroVersion } from "./version.ts";
 import type { McpRequest, McpResponse, WebSearchResults } from "./websearch.ts";
 
 export interface McpShimConfig {
@@ -35,13 +36,13 @@ function generateMachineId(config: McpShimConfig): string {
 }
 
 function buildMcpHeaders(config: McpShimConfig): Record<string, string> {
-  const version = config.kiroVersion || "0.9.2";
+  const version = config.kiroVersion || effectiveKiroVersion();
   const machineId = generateMachineId(config);
   const nodeVersion = process.version.replace("v", "");
   const headers: Record<string, string> = {
     "content-type": "application/json",
-    "x-amz-user-agent": `aws-sdk-js/1.0.27 KiroIDE-${version}-${machineId}`,
-    "user-agent": `aws-sdk-js/1.0.27 ua/2.1 os/${os.platform()} lang/js md/nodejs#${nodeVersion} api/codewhispererstreaming#1.0.27 m/E KiroIDE-${version}-${machineId}`,
+    "x-amz-user-agent": `aws-sdk-js/1.0.34 KiroIDE-${version}-${machineId}`,
+    "user-agent": `aws-sdk-js/1.0.34 ua/2.1 os/${os.platform()} lang/js md/nodejs#${nodeVersion} api/codewhispererstreaming#1.0.34 m/E KiroIDE-${version}-${machineId}`,
     host: getKiroRuntimeHost(config),
     "amz-sdk-invocation-id": uuidv4(),
     "amz-sdk-request": "attempt=1; max=3",

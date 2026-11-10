@@ -28,12 +28,14 @@ import { calculateClaudeCost } from "../usage/pricing.ts";
 import { getKiroRuntimeHost } from "./constants.ts";
 import { isExternalIdpAccount } from "../accounts/credential-utils.ts";
 import { createToolNameMap } from "./tool-names.ts";
+import {
+  effectiveKiroVersion,
+  USAGE_API_KIRO_VERSION,
+} from "./version.ts";
 
 // ============================================================================
 // Constants
 // ============================================================================
-
-const KIRO_VERSION = "0.9.2";
 
 const KIRO_INPUT_TOO_LONG_PATTERNS = [
   /\bprompt is too long\b/i,
@@ -200,7 +202,13 @@ export function buildHeaders(
   extraConfig?: ProviderExtraConfig | null,
   apiName: "streaming" | "usageLimits" = "streaming",
 ): Record<string, string> {
-  const kiroVersion = KIRO_VERSION;
+  const isUsageApi = apiName === "usageLimits";
+  const kiroVersion = isUsageApi
+    ? USAGE_API_KIRO_VERSION
+    : effectiveKiroVersion();
+  const sdkVersion = isUsageApi ? "1.0.0" : "1.0.34";
+  const api = isUsageApi ? "codewhispererruntime" : "codewhispererstreaming";
+  const metrics = isUsageApi ? "m/N,E" : "m/E";
   const machineId = generateMachineId(extraConfig || null);
   const { osName, nodeVersion } = getSystemRuntimeInfo();
 
@@ -213,9 +221,9 @@ export function buildHeaders(
   };
 
   headers["x-amz-user-agent"] =
-    `aws-sdk-js/1.0.27 KiroIDE-${kiroVersion}-${machineId}`;
+    `aws-sdk-js/${sdkVersion} KiroIDE-${kiroVersion}-${machineId}`;
   headers["user-agent"] =
-    `aws-sdk-js/1.0.27 ua/2.1 os/${osName} lang/js md/nodejs#${nodeVersion} api/codewhispererstreaming#1.0.27 m/E KiroIDE-${kiroVersion}-${machineId}`;
+    `aws-sdk-js/${sdkVersion} ua/2.1 os/${osName} lang/js md/nodejs#${nodeVersion} api/${api}#${sdkVersion} ${metrics} KiroIDE-${kiroVersion}-${machineId}`;
 
   const authMethod = extraConfig?.authMethod?.trim().toLowerCase();
   if (authMethod === "api_key" || authMethod === "apikey") {

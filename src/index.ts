@@ -1,5 +1,6 @@
 import { AppDatabase } from "./db.ts";
 import { config } from "./config.ts";
+import { startKiroVersionRefresher } from "./kiro/version.ts";
 import { createServerContext } from "./server.ts";
 
 const TRANSIENT_NETWORK_ERRORS = new Set([
@@ -18,6 +19,7 @@ process.on("uncaughtException", (error: NodeJS.ErrnoException) => {
 });
 
 const context = createServerContext(new AppDatabase(config.dbPath));
+const versionTimer = startKiroVersionRefresher();
 const server = context.app.listen(config.port, config.host, () => {
   console.log(`Kiro adapter listening at http://${config.host}:${config.port}`);
 });
@@ -46,6 +48,7 @@ const usageTimer = setInterval(() => {
 usageTimer.unref();
 
 function shutdown(): void {
+  clearInterval(versionTimer);
   clearInterval(refreshTimer);
   clearInterval(usageTimer);
   clearTimeout(initialUsageTimer);
