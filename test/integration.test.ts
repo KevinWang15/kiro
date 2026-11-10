@@ -74,6 +74,17 @@ async function createHarness(t: test.TestContext) {
           res.end(Buffer.concat([eventFrame({ content: "Half a repl" }), eventFrame({ contextUsagePercentage: 90 })]));
           return;
         }
+        if (req.headers.authorization === "Bearer kiro-refusal") {
+          res.end(eventFrame({
+            stopDetails: {
+              refusal: {
+                explanation: "Your access to this model has been temporarily restricted due to excessive content refusals.",
+              },
+            },
+            stopReason: "CONTENT_FILTERED",
+          }, [{ name: ":event-type", value: "metadataEvent" }]));
+          return;
+        }
         res.end(successfulKiroStream("Hello from local Kiro", 0.25));
       });
       return;
@@ -311,6 +322,41 @@ test("when every account fails, the client gets the last real Kiro error", async
   const result = await sendMessage(baseUrl, "claude-sonnet-4-5");
   assert.ok([402, 403].includes(result.response.status), String(result.response.status));
   assert.match(JSON.stringify(result.body), /Quota exhausted|suspicious activity/);
+});
+
+test("Kiro metadata refusals preserve their reason without disabling the credential", async (t) => {
+  const { baseUrl, inferenceHeaders } = await createHarness(t);
+  const accountId = await importAccount(baseUrl, "kiro-refusal");
+  const expected = {
+    type: "error",
+    error: {
+      type: "permission_error",
+      code: "CONTENT_FILTERED",
+      message: "Your access to this model has been temporarily restricted due to excessive content refusals.",
+    },
+  };
+
+  const json = await sendMessage(baseUrl, "claude-opus-5-5");
+  assert.equal(json.response.status, 403);
+  assert.deepEqual(json.body, expected);
+
+  const account = await jsonRequest(`${baseUrl}/api/accounts/${accountId}`);
+  assert.equal(account.body.autoDisabled, false);
+
+  const response = await fetch(`${baseUrl}/v1/messages`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ model: "claude-opus-5-5", stream: true, messages: [{ role: "user", content: "hello" }] }),
+  });
+  assert.equal(response.status, 200);
+  const sse = await response.text();
+  const errorEvent = sse.split("\n")
+    .filter((line) => line.startsWith("data: "))
+    .map((line) => JSON.parse(line.slice(6)))
+    .find((event) => event.type === "error");
+  assert.deepEqual(errorEvent, expected);
+  assert.doesNotMatch(sse, /closed the stream|message_stop/);
+  assert.equal(inferenceHeaders.filter((headers) => headers.authorization === "Bearer kiro-refusal").length, 2);
 });
 
 test("a reply Kiro cuts off (no metering event) is reported as an error, not end_turn", async (t) => {

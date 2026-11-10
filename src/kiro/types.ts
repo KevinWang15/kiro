@@ -204,6 +204,7 @@ export type KiroEvent =
   | { type: "reasoning"; text: string; signature?: string }
   | { type: "contextUsage"; data: { percentage: number } }
   | { type: "creditConsumption"; data: { amount: number } }
+  | { type: "refusal"; stopReason: string; message: string }
   | { type: "error"; errorCode: string; errorMessage: string }
   | { type: "exception"; exceptionType: string; message: string };
 

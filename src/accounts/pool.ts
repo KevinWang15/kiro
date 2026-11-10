@@ -2,6 +2,7 @@ import axios from "axios";
 import { createHash } from "node:crypto";
 import KiroApiProviderHandler, {
   getKiroUnrecoverableErrorReason,
+  KiroRefusalError,
   KiroTruncatedError,
 } from "../kiro/handler.ts";
 import { CacheSimulator } from "../kiro/cache-simulation.ts";
@@ -53,6 +54,7 @@ export interface PoolResult {
   error?: string;
   isUnrecoverable?: boolean;
   unrecoverableReason?: string;
+  credentialError?: boolean;
   accountId?: number;
 }
 
@@ -66,8 +68,22 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function shouldAutoDisableCredential(statusCode?: number): boolean {
-  return statusCode === 401 || statusCode === 403;
+function shouldAutoDisableCredential(result: PoolResult): boolean {
+  return (
+    result.credentialError !== false &&
+    (result.statusCode === 401 || result.statusCode === 403)
+  );
+}
+
+function kiroRefusalResponse(error: KiroRefusalError) {
+  return {
+    type: "error",
+    error: {
+      type: error.errorType,
+      code: error.code,
+      message: error.message,
+    },
+  };
 }
 
 export function isQuotaExhausted(
@@ -369,7 +385,7 @@ export class KiroAccountPool {
       lastResult = result;
       if (result.isUnrecoverable) return result;
 
-      if (shouldAutoDisableCredential(result.statusCode)) {
+      if (shouldAutoDisableCredential(result)) {
         let retryResult = result;
         for (
           let attempt = 0;
@@ -387,7 +403,7 @@ export class KiroAccountPool {
         lastResult = retryResult;
         if (retryResult.isUnrecoverable) return retryResult;
         if (
-          shouldAutoDisableCredential(retryResult.statusCode) &&
+          shouldAutoDisableCredential(retryResult) &&
           credentials.disableAutoDisable !== true
         ) {
           this.accounts.update(account.id, {
@@ -603,20 +619,30 @@ export class KiroAccountPool {
           // stream with an SSE error event so the client sees a failure
           // instead of a reply that just stops.
           const message = (error as Error).message;
+          const refusal = error instanceof KiroRefusalError ? error : null;
           await Promise.resolve(
             options.sink.onChunk(
-              `event: error\ndata: ${JSON.stringify({
-                type: "error",
-                error: {
-                  type: error instanceof KiroTruncatedError ? "overloaded_error" : "api_error",
-                  message,
-                },
-              })}\n\n`,
+              `event: error\ndata: ${JSON.stringify(
+                refusal
+                  ? kiroRefusalResponse(refusal)
+                  : {
+                      type: "error",
+                      error: {
+                        type:
+                          error instanceof KiroTruncatedError
+                            ? "overloaded_error"
+                            : "api_error",
+                        message,
+                      },
+                    },
+              )}\n\n`,
             ),
           ).catch(() => {});
           const poolResult = {
             success: false,
-            statusCode: error instanceof KiroTruncatedError ? 502 : response.status,
+            statusCode:
+              refusal?.statusCode ??
+              (error instanceof KiroTruncatedError ? 502 : response.status),
             streamed: true,
             responseHeaders: publicHeaders,
             error: `Stream read failed after partial response: ${message}`,
@@ -692,21 +718,24 @@ export class KiroAccountPool {
       const axiosError = error as any;
       const response = axiosError.response?.data;
       const message = (error as Error).message;
+      const refusal = error instanceof KiroRefusalError ? error : null;
       const unrecoverableReason = getKiroUnrecoverableErrorReason(
-        axiosError.response?.status,
+        refusal?.statusCode ?? axiosError.response?.status,
         response,
         message,
       );
       const poolResult: PoolResult = {
         success: false,
         statusCode:
-          error instanceof KiroTruncatedError
+          refusal?.statusCode ??
+          (error instanceof KiroTruncatedError
             ? 502
-            : axiosError.response?.status || 500,
-        response,
+            : axiosError.response?.status || 500),
+        response: refusal ? kiroRefusalResponse(refusal) : response,
         error: message,
         isUnrecoverable: unrecoverableReason !== undefined,
         unrecoverableReason,
+        credentialError: refusal ? false : undefined,
         accountId: account.id,
       };
       this.logAttempt(account.id, originalRequest.model, poolResult, startedAt);

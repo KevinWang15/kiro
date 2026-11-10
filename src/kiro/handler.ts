@@ -71,22 +71,50 @@ export type KiroUnrecoverableErrorReason =
   | "input_too_long"
   | "improperly_formed_request";
 
-function isKiroFailureEvent(
-  event: KiroEvent,
-): event is Extract<KiroEvent, { type: "error" | "exception" }> {
-  return event.type === "error" || event.type === "exception";
+type KiroFailureEvent = Extract<
+  KiroEvent,
+  { type: "error" | "exception" | "refusal" }
+>;
+
+export class KiroRefusalError extends Error {
+  readonly statusCode = 403;
+  readonly errorType = "permission_error";
+
+  constructor(
+    public readonly code: string,
+    message: string,
+  ) {
+    super(message);
+    this.name = "KiroRefusalError";
+  }
 }
 
-function getKiroFailureMessage(
-  event: Extract<KiroEvent, { type: "error" | "exception" }>,
-): string {
+function isKiroFailureEvent(event: KiroEvent): event is KiroFailureEvent {
+  return (
+    event.type === "error" ||
+    event.type === "exception" ||
+    event.type === "refusal"
+  );
+}
+
+function getKiroFailureMessage(event: KiroFailureEvent): string {
   if (event.type === "error") {
     const details = event.errorMessage ? `: ${event.errorMessage}` : "";
     return `Kiro upstream error ${event.errorCode}${details}`;
   }
 
-  const details = event.message ? `: ${event.message}` : "";
-  return `Kiro upstream exception ${event.exceptionType}${details}`;
+  if (event.type === "exception") {
+    const details = event.message ? `: ${event.message}` : "";
+    return `Kiro upstream exception ${event.exceptionType}${details}`;
+  }
+
+  return event.message;
+}
+
+function getKiroFailureError(event: KiroFailureEvent): Error {
+  if (event.type === "refusal")
+    return new KiroRefusalError(event.stopReason, event.message);
+  return new Error(getKiroFailureMessage(event));
 }
 
 // Longest the client goes without an SSE event while Kiro is still sending
@@ -497,7 +525,8 @@ export default class KiroApiProviderHandler {
 
         case "exception":
         case "error":
-          throw new Error(getKiroFailureMessage(event));
+        case "refusal":
+          throw getKiroFailureError(event);
       }
     }
 
@@ -736,7 +765,7 @@ export default class KiroApiProviderHandler {
         const event = parsed && toolNames.restore(parsed);
         if (!event) continue;
         if (isKiroFailureEvent(event)) {
-          throw new Error(getKiroFailureMessage(event));
+          throw getKiroFailureError(event);
         }
 
         events.push(event);

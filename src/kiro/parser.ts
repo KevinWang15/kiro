@@ -474,6 +474,28 @@ export function parseEventPayload(
     };
   }
 
+  if (eventType === "metadataEvent") {
+    try {
+      const data = JSON.parse(text);
+      const refusal = data.stopDetails?.refusal;
+      if (refusal) {
+        return {
+          type: "refusal",
+          stopReason:
+            typeof data.stopReason === "string"
+              ? data.stopReason
+              : "CONTENT_FILTERED",
+          message:
+            typeof refusal.explanation === "string"
+              ? refusal.explanation
+              : "Kiro refused the request",
+        };
+      }
+    } catch {
+      return null;
+    }
+  }
+
   // Handle meteringEvent from :event-type header
   if (eventType === "meteringEvent") {
     try {
