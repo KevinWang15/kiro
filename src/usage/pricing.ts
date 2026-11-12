@@ -93,7 +93,8 @@ export function calculateClaudeCost(
   model: string,
   usage: UsageTokens,
 ): CostBreakdown {
-  const lower = model.toLowerCase();
+  // Pricing patterns use dashed versions; accept dotted model IDs as aliases.
+  const lower = model.toLowerCase().replace(/\./g, "-");
   let pricing: ModelPricing | undefined;
 
   // Check more-specific keys first, then broader ones (first match wins)

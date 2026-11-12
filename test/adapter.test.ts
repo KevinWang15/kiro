@@ -146,6 +146,30 @@ test("token windows, CJK estimates and Claude pricing match expected formulas", 
   assert.equal(cost.total_cost_usd, 22.05);
 });
 
+test("Opus 5.5 aliases use identical input, output and cache pricing", () => {
+  const usage = {
+    input_tokens: 1_000_000,
+    output_tokens: 1_000_000,
+    cache_read_input_tokens: 1_000_000,
+    cache_creation_input_tokens: 1_000_000,
+  };
+  const expected = {
+    input_cost_usd: 4,
+    output_cost_usd: 20,
+    cache_read_cost_usd: 0.2,
+    cache_creation_cost_usd: 5,
+    total_cost_usd: 29.2,
+  };
+  for (const model of [
+    "claude-opus-5-5",
+    "claude-opus-5.5",
+    "claude-opus-5-5-20261101",
+    "claude-opus-5.5-20261101",
+  ]) {
+    assert.deepEqual(calculateClaudeCost(model, usage), expected, model);
+  }
+});
+
 test("event-stream response becomes an Anthropic message with usage and credits", async () => {
   const handler = new KiroApiProviderHandler(
     new CacheSimulator(new InMemoryCacheStore(new MockClock(0))),
