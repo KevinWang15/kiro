@@ -9,6 +9,7 @@ import {
 } from "../kiro/handler.ts";
 import { getKiroRuntimeBaseUrl } from "../kiro/constants.ts";
 import { USAGE_API_KIRO_VERSION } from "../kiro/version.ts";
+import { getEffectiveProfileArn } from "../kiro/profile.ts";
 import { config } from "../config.ts";
 import { isApiKeyAccount } from "./token-manager.ts";
 import type { AccountRepository } from "./repository.ts";
@@ -171,8 +172,8 @@ async function fetchRest(
     const baseUrl =
       config.upstreamBaseUrl || getKiroRuntimeBaseUrl(credentials);
     let url = `${baseUrl}/getUsageLimits?origin=AI_EDITOR&resourceType=AGENTIC_REQUEST&isEmailRequired=true`;
-    if (credentials.profileArn)
-      url += `&profileArn=${encodeURIComponent(credentials.profileArn)}`;
+    const profileArn = getEffectiveProfileArn(credentials);
+    if (profileArn) url += `&profileArn=${encodeURIComponent(profileArn)}`;
     const httpsAgent = buildAgentFromProxy(proxy || undefined);
     const response = await axios.get(url, {
       headers: buildHeaders(token, credentials, "usageLimits"),

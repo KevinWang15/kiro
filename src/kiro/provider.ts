@@ -17,6 +17,8 @@ export interface ProviderExtraConfig {
   region?: string;
   runtimeRegion?: string;
   profileArn?: string;
+  profile_arn?: string;
+  kiroApiKey?: string;
   ssoSessionId?: string;
   idToken?: string;
   machineId?: string;

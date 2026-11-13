@@ -30,6 +30,7 @@ import {
   type ReasoningReplayStore,
 } from "./reasoning-replay.ts";
 import { KiroRefusalError, KiroUpstreamError } from "./errors.ts";
+import { getStreamingProfileArn } from "./profile.ts";
 export { KiroRefusalError, KiroUpstreamError } from "./errors.ts";
 import { calculateClaudeCost } from "../usage/pricing.ts";
 import { getKiroRuntimeHost } from "./constants.ts";
@@ -412,9 +413,8 @@ export default class KiroApiProviderHandler {
       conversationState: result.conversationState,
     };
 
-    if (extraConfig?.profileArn) {
-      request.profileArn = extraConfig.profileArn;
-    }
+    const profileArn = getStreamingProfileArn(extraConfig);
+    if (profileArn) request.profileArn = profileArn;
 
     return request;
   }

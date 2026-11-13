@@ -5,6 +5,7 @@ import * as os from "node:os";
 import { buildAgentFromProxy } from "../proxy.ts";
 import { getKiroRuntimeBaseUrl, getKiroRuntimeHost } from "./constants.ts";
 import { effectiveKiroVersion } from "./version.ts";
+import { getStreamingProfileArn } from "./profile.ts";
 import type { McpRequest, McpResponse, WebSearchResults } from "./websearch.ts";
 
 export interface McpShimConfig {
@@ -16,6 +17,8 @@ export interface McpShimConfig {
   authMethod?: string;
   provider?: string;
   profileArn?: string;
+  profile_arn?: string;
+  kiroApiKey?: string;
   proxy?: {
     type?: string;
     url?: string;
@@ -49,7 +52,8 @@ function buildMcpHeaders(config: McpShimConfig): Record<string, string> {
     Authorization: `Bearer ${config.accessToken}`,
     Connection: "close",
   };
-  if (config.profileArn) headers["x-amzn-kiro-profile-arn"] = config.profileArn;
+  const profileArn = getStreamingProfileArn(config);
+  if (profileArn) headers["x-amzn-kiro-profile-arn"] = profileArn;
   if (
     ["api_key", "apikey"].includes(
       config.authMethod?.trim().toLowerCase() || "",

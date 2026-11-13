@@ -57,6 +57,13 @@ refusal in Kiro's response stream; it is distinct from an upstream HTTP 403.
 
 The admin page supports bulk imports, token refresh, credit balances, account tests, editing, and pooling with failover. OAuth tokens refresh automatically in the background, and usage is checked periodically.
 
+Inference and MCP requests preserve a non-empty configured `profileArn` (or
+`profile_arn`). Otherwise, Builder ID and legacy OAuth accounts use the Builder
+ID profile default, and GitHub, Google, or `social` accounts use the social
+profile default. API-key accounts receive no default ARN. These defaults apply
+to outgoing requests without changing stored credentials. Usage lookups omit
+the Builder ID placeholder and preserve real configured profiles.
+
 Assign an HTTP, HTTPS, or SOCKS5 proxy to route inference, token exchange, credit lookup, and MCP traffic:
 
 ```text

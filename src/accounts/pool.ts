@@ -505,6 +505,8 @@ export class KiroAccountPool {
           region: credentials.region || "us-east-1",
           runtimeRegion: credentials.runtimeRegion,
           profileArn: credentials.profileArn,
+          profile_arn: credentials.profile_arn,
+          kiroApiKey: credentials.kiroApiKey,
           accessToken: account.accessToken || undefined,
           refreshToken: credentials.refreshToken,
           clientIdHash: credentials.clientIdHash,
