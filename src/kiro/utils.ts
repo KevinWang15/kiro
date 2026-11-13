@@ -36,8 +36,23 @@ function isInsideCodeFence(buffer: string, pos: number): boolean {
   return ((buffer.slice(0, pos).match(/```/g) || []).length) % 2 === 1;
 }
 
-function isQuotedTag(buffer: string, pos: number, tagLength: number): boolean {
-  return isWrappedInQuotes(buffer, pos, tagLength) || isInsideCodeFence(buffer, pos);
+function isQuotedTag(
+  buffer: string,
+  pos: number,
+  tagLength: number,
+  inCodeFence = false,
+  previousChar = "",
+): boolean {
+  const wrapped = pos === 0
+    ? QUOTE_PAIRS[previousChar] !== undefined &&
+      buffer[tagLength] === QUOTE_PAIRS[previousChar]
+    : isWrappedInQuotes(buffer, pos, tagLength);
+  return wrapped || (inCodeFence !== isInsideCodeFence(buffer, pos));
+}
+
+/** Remove only the optional line break separator, preserving answer indentation. */
+export function stripThinkingSeparator(content: string): string {
+  return content.replace(/^(?:\r\n|\r|\n){1,2}/, "");
 }
 
 /**
@@ -53,12 +68,12 @@ export function splitThinking(content: string): { thinking: string; text: string
   if (start === null) return { thinking: "", text: content };
   const before = content.slice(0, start);
   let rest = content.slice(start + "<thinking>".length);
-  if (rest.startsWith("\n")) rest = rest.slice(1);
+  rest = rest.replace(/^(?:\r\n|\r|\n)/, "");
   const end = findRealThinkingEndTag(rest) ?? findRealThinkingEndTagAtBufferEnd(rest);
   if (end === null) return { thinking: rest, text: before.trim() ? before : "" };
   const thinking = rest.slice(0, end);
   let after = rest.slice(end + "</thinking>".length);
-  after = after.replace(/^\n{1,2}/, "");
+  after = stripThinkingSeparator(after);
   const text = before.trim() ? before + after : after;
   return { thinking, text };
 }
@@ -84,47 +99,14 @@ export function couldStartWithThinkingTag(buffer: string): boolean {
 }
 
 /**
- * Find the real </thinking> end tag while text is still arriving: not quoted
- * (see isQuotedTag) and followed by a blank line (\n\n). Returns null until
- * enough text has arrived to tell.
+ * Find an unquoted </thinking> while text is arriving. One following character
+ * is needed to distinguish a tag from a quoted mention split across chunks.
+ * Answer formatting (LF, CRLF, or no separator) does not determine the boundary.
  */
-export function findRealThinkingEndTag(buffer: string): number | null {
-  const TAG = "</thinking>";
-  let searchStart = 0;
-
-  while (true) {
-    const pos = buffer.indexOf(TAG, searchStart);
-    if (pos === -1) return null;
-
-    if (isQuotedTag(buffer, pos, TAG.length)) {
-      searchStart = pos + 1;
-      continue;
-    }
-
-    // Check if followed by double newline
-    const afterPos = pos + TAG.length;
-    const afterContent = buffer.substring(afterPos);
-
-    // If not enough content to check, wait for more
-    if (afterContent.length < 2) {
-      return null;
-    }
-
-    // Real end tag must be followed by \n\n
-    if (afterContent.startsWith("\n\n")) {
-      return pos;
-    }
-
-    searchStart = pos + 1;
-  }
-}
-
-/**
- * Find the real </thinking> end tag once no more text is coming (end of reply,
- * or a tool call starts): not quoted and followed only by whitespace.
- */
-export function findRealThinkingEndTagAtBufferEnd(
+export function findRealThinkingEndTag(
   buffer: string,
+  inCodeFence = false,
+  previousChar = "",
 ): number | null {
   const TAG = "</thinking>";
   let searchStart = 0;
@@ -133,20 +115,39 @@ export function findRealThinkingEndTagAtBufferEnd(
     const pos = buffer.indexOf(TAG, searchStart);
     if (pos === -1) return null;
 
-    if (isQuotedTag(buffer, pos, TAG.length)) {
+    if (pos + TAG.length === buffer.length) return null;
+
+    if (isQuotedTag(buffer, pos, TAG.length, inCodeFence, previousChar)) {
       searchStart = pos + 1;
       continue;
     }
 
-    // Check if followed only by whitespace
-    const afterPos = pos + TAG.length;
-    const afterContent = buffer.substring(afterPos);
+    return pos;
+  }
+}
 
-    if (afterContent.trim().length === 0) {
-      return pos;
+/**
+ * Find the real </thinking> end tag once no more text is coming (end of reply,
+ * or a tool call starts), including a tag at the very end of the buffer.
+ */
+export function findRealThinkingEndTagAtBufferEnd(
+  buffer: string,
+  inCodeFence = false,
+  previousChar = "",
+): number | null {
+  const TAG = "</thinking>";
+  let searchStart = 0;
+
+  while (true) {
+    const pos = buffer.indexOf(TAG, searchStart);
+    if (pos === -1) return null;
+
+    if (isQuotedTag(buffer, pos, TAG.length, inCodeFence, previousChar)) {
+      searchStart = pos + 1;
+      continue;
     }
 
-    searchStart = pos + 1;
+    return pos;
   }
 }
 

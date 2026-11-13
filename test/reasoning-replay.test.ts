@@ -7,6 +7,7 @@ import { AppDatabase } from "../src/db.ts";
 import { convertRequest } from "../src/kiro/converter.ts";
 import KiroApiProviderHandler from "../src/kiro/handler.ts";
 import { SqliteReasoningReplayStore } from "../src/kiro/reasoning-replay.ts";
+import { splitThinking } from "../src/kiro/utils.ts";
 import type { ContentBlock, MessagesRequest } from "../src/kiro/types.ts";
 import { eventFrame, meteringFrame, reasoningFrame } from "./helpers.ts";
 
@@ -260,4 +261,41 @@ test("trailing assistant text and reasoning are retained for continuation withou
     content: "Partial answer\n\n<thinking>Unfinished reasoning</thinking>",
     reasoningContent: { reasoningText: { text: "Signed reasoning", signature: "SIG" } },
   } }]);
+});
+
+test("inline thinking boundaries accept LF, CRLF, or no separator across arbitrary model chunks", async () => {
+  const thinking = 'Use "</thinking>" and `</thinking>` literally.\n```\n</thinking>\n```\n' + "Keep reasoning. ".repeat(4);
+  const answer = "  Indented answer.\nNext line.";
+  for (const separator of ["", "\n", "\n\n", "\r\n", "\r\n\r\n", "\r"]) {
+    const text = `<thinking>\r\n${thinking}</thinking>${separator}${answer}`;
+    assert.deepEqual(splitThinking(text), { thinking, text: answer });
+    for (const size of [1, 2, 7, 17, text.length]) {
+      const frames: Buffer[] = [];
+      for (let i = 0; i < text.length; i += size) frames.push(eventFrame({ content: text.slice(i, i + size) }));
+      frames.push(meteringFrame());
+      for (const stream of [false, true]) {
+        const content = await reply(new KiroApiProviderHandler(), request("summarized"), frames, stream);
+        assert.deepEqual(content, [
+          { type: "thinking", thinking }, { type: "text", text: answer },
+        ], `separator ${JSON.stringify(separator)}, chunk size ${size}, stream ${stream}`);
+      }
+    }
+  }
+});
+
+test("a tool boundary flushes inline reasoning before the tool and preserves subsequent answer text", async () => {
+  for (const closingTag of ["</thinking>", ""]) {
+    for (const stream of [false, true]) {
+      const content = await reply(new KiroApiProviderHandler(), request("summarized"), [
+        eventFrame({ content: `<thinking>\r\nReason${closingTag}` }),
+        eventFrame({ name: "Lookup", toolUseId: "t", input: "{}", stop: true }),
+        eventFrame({ content: "Answer after the tool." }), meteringFrame(),
+      ], stream);
+      assert.deepEqual(content, [
+        { type: "thinking", thinking: "Reason" },
+        { type: "tool_use", id: "t", name: "Lookup", input: {} },
+        { type: "text", text: "Answer after the tool." },
+      ]);
+    }
+  }
 });

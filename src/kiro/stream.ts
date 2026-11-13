@@ -16,6 +16,7 @@ import {
   findRealThinkingEndTagAtBufferEnd,
   findRealThinkingStartTag,
   couldStartWithThinkingTag,
+  stripThinkingSeparator,
 } from "./utils.ts";
 import { calculateTotalContextTokens, estimateTokens } from "./token.ts";
 
@@ -254,6 +255,9 @@ export class StreamContext {
   private textBlockIndex: number | null = null;
   private toolBlockIndices = new Map<string, number>();
   private stripThinkingLeadingNewline = false;
+  private stripThinkingTrailingNewlines = false;
+  private thinkingInCodeFence = false;
+  private thinkingPreviousChar = "";
 
   // Reasoning Kiro sends as reasoningContentEvent frames
   private reasoningBlockIndex: number | null = null;
@@ -503,16 +507,15 @@ export class StreamContext {
       } else if (this.inThinkingBlock) {
         // Strip leading newline after <thinking>
         if (this.stripThinkingLeadingNewline) {
-          if (this.thinkingBuffer.startsWith("\n")) {
-            this.thinkingBuffer = this.thinkingBuffer.substring(1);
-            this.stripThinkingLeadingNewline = false;
-          } else if (this.thinkingBuffer.length > 0) {
-            this.stripThinkingLeadingNewline = false;
-          }
+          if (!this.thinkingBuffer || this.thinkingBuffer === "\r") break;
+          this.thinkingBuffer = this.thinkingBuffer.replace(/^(?:\r\n|\r|\n)/, "");
+          this.stripThinkingLeadingNewline = false;
         }
 
         // Looking for </thinking> end
-        const endPos = findRealThinkingEndTag(this.thinkingBuffer);
+        const endPos = findRealThinkingEndTag(
+          this.thinkingBuffer, this.thinkingInCodeFence, this.thinkingPreviousChar,
+        );
 
         if (endPos !== null) {
           // Extract thinking content
@@ -541,19 +544,25 @@ export class StreamContext {
             if (stopEvent) events.push(stopEvent);
           }
 
-          // Skip </thinking>\n\n
+          // Strip optional line breaks after the tag, even across chunks.
           this.thinkingBuffer = this.thinkingBuffer.substring(
-            endPos + "</thinking>\n\n".length,
+            endPos + "</thinking>".length,
           );
+          this.stripThinkingTrailingNewlines = true;
         } else {
           // No end tag yet, flush safe content
           const targetLen = Math.max(
             0,
             this.thinkingBuffer.length - "</thinking>\n\n".length,
           );
-          const safeLen = findCharBoundary(this.thinkingBuffer, targetLen);
+          let safeLen = findCharBoundary(this.thinkingBuffer, targetLen);
+          // Keep fence delimiters whole when retaining context for the next chunk.
+          while (safeLen > 0 && this.thinkingBuffer[safeLen - 1] === "`") safeLen--;
           if (safeLen > 0) {
             const safeContent = this.thinkingBuffer.substring(0, safeLen);
+            if ((safeContent.match(/```/g)?.length ?? 0) % 2)
+              this.thinkingInCodeFence = !this.thinkingInCodeFence;
+            this.thinkingPreviousChar = safeContent.at(-1) ?? "";
             if (safeContent && this.thinkingBlockIndex !== null) {
               events.push(
                 this.createThinkingDeltaEvent(
@@ -568,6 +577,12 @@ export class StreamContext {
         }
       } else {
         // Thinking extracted, remaining content as text
+        if (this.stripThinkingTrailingNewlines) {
+          // Wait while a separator (including CRLF) may still be incomplete.
+          if (/^(?:\r\n|\r|\n){0,2}$/.test(this.thinkingBuffer)) break;
+          this.thinkingBuffer = stripThinkingSeparator(this.thinkingBuffer);
+          this.stripThinkingTrailingNewlines = false;
+        }
         if (this.thinkingBuffer) {
           const remaining = this.thinkingBuffer;
           this.thinkingBuffer = "";
@@ -636,6 +651,36 @@ export class StreamContext {
     };
   }
 
+  /** Flush inline reasoning when a tool starts or the response ends. */
+  private finishInlineThinking(): SseEvent[] {
+    const events: SseEvent[] = [];
+    if (this.stripThinkingLeadingNewline) {
+      this.thinkingBuffer = this.thinkingBuffer.replace(/^(?:\r\n|\r|\n)/, "");
+      this.stripThinkingLeadingNewline = false;
+    }
+    const endPos = findRealThinkingEndTagAtBufferEnd(
+      this.thinkingBuffer, this.thinkingInCodeFence, this.thinkingPreviousChar,
+    );
+    const thinking = endPos === null
+      ? this.thinkingBuffer
+      : this.thinkingBuffer.substring(0, endPos);
+    if (this.thinkingBlockIndex !== null) {
+      if (thinking) events.push(this.createThinkingDeltaEvent(this.thinkingBlockIndex, thinking));
+      events.push(this.createThinkingDeltaEvent(this.thinkingBlockIndex, ""));
+      const stop = this.stateManager.handleContentBlockStop(this.thinkingBlockIndex);
+      if (stop) events.push(stop);
+      this.thinkingBlockIndex = null;
+    }
+    const remaining = endPos === null ? "" : stripThinkingSeparator(
+      this.thinkingBuffer.substring(endPos + "</thinking>".length),
+    );
+    this.inThinkingBlock = false;
+    this.thinkingExtracted = true;
+    this.thinkingBuffer = "";
+    if (remaining) events.push(...this.createTextDeltaEvents(remaining));
+    return events;
+  }
+
   /**
    * Process tool use event
    */
@@ -644,38 +689,7 @@ export class StreamContext {
 
     // Handle thinking boundary before tool_use
     if (this.thinkingEnabled && this.inThinkingBlock) {
-      const endPos = findRealThinkingEndTagAtBufferEnd(this.thinkingBuffer);
-      if (endPos !== null) {
-        const thinkingContent = this.thinkingBuffer.substring(0, endPos);
-        if (thinkingContent && this.thinkingBlockIndex !== null) {
-          events.push(
-            this.createThinkingDeltaEvent(
-              this.thinkingBlockIndex,
-              thinkingContent,
-            ),
-          );
-        }
-
-        this.inThinkingBlock = false;
-        this.thinkingExtracted = true;
-
-        if (this.thinkingBlockIndex !== null) {
-          events.push(
-            this.createThinkingDeltaEvent(this.thinkingBlockIndex, ""),
-          );
-          const stopEvent = this.stateManager.handleContentBlockStop(
-            this.thinkingBlockIndex,
-          );
-          if (stopEvent) events.push(stopEvent);
-        }
-
-        const afterPos = endPos + "</thinking>".length;
-        const remaining = this.thinkingBuffer.substring(afterPos).trimStart();
-        this.thinkingBuffer = "";
-        if (remaining) {
-          events.push(...this.createTextDeltaEvents(remaining));
-        }
-      }
+      events.push(...this.finishInlineThinking());
     }
 
     // Flush any buffered text before tool_use
@@ -743,58 +757,16 @@ export class StreamContext {
   generateFinalEvents(): SseEvent[] {
     const events: SseEvent[] = [];
 
+    if (this.stripThinkingTrailingNewlines) {
+      this.thinkingBuffer = stripThinkingSeparator(this.thinkingBuffer);
+      this.stripThinkingTrailingNewlines = false;
+    }
+
     // Flush thinking buffer
-    if (this.thinkingEnabled && this.thinkingBuffer) {
+    if (this.thinkingEnabled) {
       if (this.inThinkingBlock) {
-        const endPos = findRealThinkingEndTagAtBufferEnd(this.thinkingBuffer);
-        if (endPos !== null) {
-          const thinkingContent = this.thinkingBuffer.substring(0, endPos);
-          if (thinkingContent && this.thinkingBlockIndex !== null) {
-            events.push(
-              this.createThinkingDeltaEvent(
-                this.thinkingBlockIndex,
-                thinkingContent,
-              ),
-            );
-          }
-
-          if (this.thinkingBlockIndex !== null) {
-            events.push(
-              this.createThinkingDeltaEvent(this.thinkingBlockIndex, ""),
-            );
-            const stopEvent = this.stateManager.handleContentBlockStop(
-              this.thinkingBlockIndex,
-            );
-            if (stopEvent) events.push(stopEvent);
-          }
-
-          this.inThinkingBlock = false;
-          this.thinkingExtracted = true;
-
-          const afterPos = endPos + "</thinking>".length;
-          const remaining = this.thinkingBuffer.substring(afterPos).trimStart();
-          if (remaining) {
-            events.push(...this.createTextDeltaEvents(remaining));
-          }
-        } else {
-          // Still in thinking, flush remaining
-          if (this.thinkingBlockIndex !== null) {
-            events.push(
-              this.createThinkingDeltaEvent(
-                this.thinkingBlockIndex,
-                this.thinkingBuffer,
-              ),
-            );
-            events.push(
-              this.createThinkingDeltaEvent(this.thinkingBlockIndex, ""),
-            );
-            const stopEvent = this.stateManager.handleContentBlockStop(
-              this.thinkingBlockIndex,
-            );
-            if (stopEvent) events.push(stopEvent);
-          }
-        }
-      } else {
+        events.push(...this.finishInlineThinking());
+      } else if (this.thinkingBuffer) {
         // Not in thinking, flush as text
         events.push(...this.createTextDeltaEvents(this.thinkingBuffer));
       }
