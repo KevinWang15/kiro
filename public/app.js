@@ -58,8 +58,9 @@ const dateTimeStack = (value) => {
   const time = d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit", second: "2-digit" });
   return `<span class="date-line">${escapeHtml(day)}</span><span class="date-line time">${escapeHtml(time)}</span>`;
 };
+const TOAST_DURATION_MS = 3500;
 const notyf = new Notyf({
-  duration: 3500,
+  duration: TOAST_DURATION_MS,
   dismissible: true,
   position: { x: "right", y: "bottom" },
   types: [
@@ -70,15 +71,42 @@ const notyf = new Notyf({
 // A modal <dialog> lives in the browser's top layer, above any z-index, so
 // toasts on <body> would be hidden behind it. Keep Notyf's container (and its
 // screen-reader announcer) inside whichever dialog is open, else on <body>.
-function placeToasts() {
-  const open = [...document.querySelectorAll("dialog[open]")].at(-1);
+function placeToasts(exclude = null) {
+  const open = [...document.querySelectorAll("dialog[open]")]
+    .filter((dialog) => dialog !== exclude).at(-1);
   const host = open || document.body;
-  for (const node of document.querySelectorAll(".notyf, .notyf-announcer"))
-    if (node.parentElement !== host) host.appendChild(node);
+  for (const node of document.querySelectorAll(".notyf, .notyf-announcer")) {
+    if (node.parentElement === host) continue;
+    const wasHidden = Boolean(node.closest("dialog:not([open])"));
+    if (typeof host.moveBefore === "function") {
+      // Preserve animation state when moving between the dialog and body.
+      host.moveBefore(node, null);
+    } else {
+      host.appendChild(node);
+    }
+    if (wasHidden || typeof host.moveBefore !== "function") {
+      // Reparenting restarts CSS animations in older browsers. Settle the
+      // existing cards so they do not look like newly fired notifications.
+      for (const animation of node.getAnimations?.({ subtree: true }) || []) {
+        if (Number.isFinite(animation.effect?.getComputedTiming().endTime))
+          animation.finish();
+      }
+    }
+  }
 }
+const activeToasts = new Map();
 function toast(message, error = false) {
   placeToasts();
-  notyf.open({ type: error ? "error" : "success", message });
+  const type = error ? "error" : "success";
+  const key = JSON.stringify([type, message]);
+  if (activeToasts.has(key)) return;
+  const notification = notyf.open({ type, message });
+  activeToasts.set(key, notification);
+  const forget = () => {
+    if (activeToasts.get(key) === notification) activeToasts.delete(key);
+  };
+  notification.on("dismiss", forget);
+  setTimeout(forget, TOAST_DURATION_MS);
 }
 // Busy state shared by every button: the button's own icon is replaced by a
 // spinner (so a play triangle or refresh arrow never spins) and the label is
@@ -156,7 +184,10 @@ function openDialog(id) {
   placeToasts();
 }
 function closeDialog(id) {
-  $(id).close();
+  const dialog = $(id);
+  // Relocate before hiding the dialog, which would cancel child animations.
+  placeToasts(dialog);
+  dialog.close();
 }
 // Loading indicators are delayed so fast responses never flash a spinner.
 // First loads show inline spinners/skeletons (already in the HTML); refreshes
@@ -1850,7 +1881,7 @@ $("#copy-script").onclick = async () => {
 };
 $("#endpoint-script").textContent =
   `export ANTHROPIC_BASE_URL=${location.origin}\nexport ANTHROPIC_API_KEY=sk-ant-api03-dummykey123123123123\n\n# programmatically approve this API Key\n(cat ~/.claude.json 2>/dev/null || echo 'null') | jq --arg key "\${ANTHROPIC_API_KEY: -20}" '(. // {}) | .customApiKeyResponses.approved |= ([.[]?, $key] | unique)' > ~/.claude.json.tmp && mv ~/.claude.json.tmp ~/.claude.json`;
-for (const dialog of $$("dialog")) dialog.addEventListener("close", placeToasts);
+for (const dialog of $$("dialog")) dialog.addEventListener("close", () => placeToasts());
 $$("[data-close]").forEach(
   (b) => (b.onclick = () => closeDialog(`#${b.dataset.close}`)),
 );
