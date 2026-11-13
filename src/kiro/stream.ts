@@ -75,7 +75,7 @@ export class SseStateManager {
    */
   hasNonThinkingBlocks(): boolean {
     for (const block of Array.from(this.activeBlocks.values())) {
-      if (block.blockType !== "thinking") {
+      if (block.blockType !== "thinking" && block.blockType !== "redacted_thinking") {
         return true;
       }
     }
@@ -258,6 +258,7 @@ export class StreamContext {
   // Reasoning Kiro sends as reasoningContentEvent frames
   private reasoningBlockIndex: number | null = null;
   private reasoningHasDelta = false;
+  private reasoningText = "";
   private readonly showReasoning: boolean;
 
   constructor(
@@ -265,6 +266,7 @@ export class StreamContext {
     inputTokens: number,
     thinkingEnabled: boolean,
     thinkingDisplay?: string,
+    private readonly onReasoning?: (signature: string, thinking: string) => void,
   ) {
     this.stateManager = new SseStateManager();
     this.model = model;
@@ -319,7 +321,9 @@ export class StreamContext {
   processKiroEvent(event: KiroEvent, modifiedModel: string): SseEvent[] {
     switch (event.type) {
       case "reasoning":
-        return this.processReasoning(event.text, event.signature);
+        return event.redactedContent !== undefined
+          ? this.processRedactedReasoning(event.redactedContent)
+          : this.processReasoning(event.text, event.signature);
       case "assistantResponse":
         return [
           ...this.closeReasoningBlock(),
@@ -370,6 +374,7 @@ export class StreamContext {
       const index = this.stateManager.getNextBlockIndex();
       this.reasoningBlockIndex = index;
       this.reasoningHasDelta = false;
+      this.reasoningText = "";
       events.push(
         ...this.stateManager.handleContentBlockStart(index, "thinking", {
           type: "content_block_start",
@@ -380,6 +385,7 @@ export class StreamContext {
     }
     const index = this.reasoningBlockIndex;
     if (text) {
+      this.reasoningText += text;
       this.outputTokens += estimateTokens(text);
       if (this.showReasoning) {
         events.push(this.createThinkingDeltaEvent(index, text));
@@ -387,6 +393,9 @@ export class StreamContext {
       }
     }
     if (signature) {
+      // Save before exposing the signature: a client can immediately submit
+      // another request from its signature/stop callback.
+      this.onReasoning?.(signature, this.reasoningText);
       if (!this.reasoningHasDelta) {
         events.push(this.createThinkingDeltaEvent(index, ""));
       }
@@ -407,6 +416,25 @@ export class StreamContext {
     const stop = this.stateManager.handleContentBlockStop(this.reasoningBlockIndex);
     this.reasoningBlockIndex = null;
     return stop ? [stop] : [];
+  }
+
+  private processRedactedReasoning(data: string): SseEvent[] {
+    const events = this.closeReasoningBlock();
+    if (!this.thinkingEnabled) return events;
+    if (this.textBlockIndex !== null) {
+      const stop = this.stateManager.handleContentBlockStop(this.textBlockIndex);
+      if (stop) events.push(stop);
+      this.textBlockIndex = null;
+    }
+    const index = this.stateManager.getNextBlockIndex();
+    events.push(...this.stateManager.handleContentBlockStart(index, "redacted_thinking", {
+      type: "content_block_start",
+      index,
+      content_block: { type: "redacted_thinking", data },
+    }));
+    const stop = this.stateManager.handleContentBlockStop(index);
+    if (stop) events.push(stop);
+    return events;
   }
 
   /**

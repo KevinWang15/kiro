@@ -77,6 +77,11 @@ export class AppDatabase {
         expiresAtMs INTEGER NOT NULL
       );
 
+      CREATE TABLE IF NOT EXISTS reasoning_replay (
+        signatureHash TEXT PRIMARY KEY,
+        thinking TEXT NOT NULL
+      );
+
       CREATE INDEX IF NOT EXISTS idx_accounts_enabled ON accounts(enabled, autoDisabled);
       CREATE INDEX IF NOT EXISTS idx_request_logs_account ON request_logs(accountId, createdAtMs);
       CREATE INDEX IF NOT EXISTS idx_request_logs_time_model ON request_logs(createdAtMs, model);

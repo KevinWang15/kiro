@@ -19,7 +19,6 @@ import {
   ConversionError,
   type KiroTool,
   type ToolResult,
-  type ToolUseEntry,
   type HistoryMessage,
   type ContentBlock,
   type KiroImage,
@@ -530,29 +529,79 @@ function processUserMessages(messages: AnthropicMessage[]) {
 }
 
 /**
- * Convert assistant message to Kiro format
+ * Convert assistant turns, keeping each native reasoning block intact.
  */
-function convertAssistantMessage(msg: AnthropicMessage): {
-  assistantResponseMessage: AssistantResponseMessage;
-} {
-  const thinkingParts: string[] = [];
-  const textParts: string[] = [];
-  const toolUses: ToolUseEntry[] = [];
+function convertAssistantMessages(
+  messages: AnthropicMessage[],
+  resolveReasoning?: (signature: string) => string | undefined,
+): HistoryMessage[] {
+  const result: HistoryMessage[] = [];
+  let assistant: AssistantResponseMessage = { content: "" };
+  let lastWasThinking = false;
+  let separateMessage = false;
+  const hasContent = () =>
+    assistant.content.length > 0 ||
+    (assistant.toolUses?.length ?? 0) > 0 ||
+    assistant.reasoningContent !== undefined;
+  const flush = () => {
+    if (!hasContent()) return;
+    if (!assistant.content && assistant.toolUses?.length && !assistant.reasoningContent) {
+      assistant.content = " ";
+    }
+    result.push({ assistantResponseMessage: assistant });
+    assistant = { content: "" };
+    lastWasThinking = false;
+    separateMessage = false;
+  };
+  const appendText = (text: string) => {
+    if (assistant.toolUses?.length) flush();
+    if (lastWasThinking || (separateMessage && assistant.content.trim()))
+      assistant.content += "\n\n";
+    assistant.content += text;
+    lastWasThinking = false;
+    separateMessage = false;
+  };
 
-  if (typeof msg.content === "string") {
-    textParts.push(msg.content);
-  } else if (Array.isArray(msg.content)) {
-    for (const block of msg.content) {
+  for (const [index, msg] of messages.entries()) {
+    // Keep the previous separator between consecutive assistant text messages.
+    separateMessage = index > 0;
+    const blocks: ContentBlock[] =
+      typeof msg.content === "string"
+        ? [{ type: "text", text: msg.content }]
+        : msg.content;
+    for (const block of blocks) {
       switch (block.type) {
         case "thinking":
-          if (block.thinking) thinkingParts.push(block.thinking);
+          if (block.signature) {
+            // Kiro has one reasoningContent union per assistant entry. Split
+            // entries at reasoning boundaries instead of combining signatures
+            // or moving reasoning ahead of preceding text/tool calls.
+            flush();
+            assistant.reasoningContent = {
+              reasoningText: {
+                text: block.thinking || resolveReasoning?.(block.signature) || "",
+                signature: block.signature,
+              },
+            };
+          } else if (block.thinking !== undefined) {
+            appendText(`<thinking>${block.thinking}</thinking>`);
+            lastWasThinking = true;
+          }
+          break;
+        case "redacted_thinking":
+          if (typeof block.data === "string") {
+            flush();
+            assistant.reasoningContent = { redactedContent: block.data };
+          }
           break;
         case "text":
-          if (block.text) textParts.push(block.text);
+          if (block.text) {
+            appendText(block.text);
+          }
           break;
         case "tool_use":
           if (block.id && block.name) {
-            toolUses.push({
+            (assistant.toolUses ??= []).push({
               toolUseId: block.id,
               name: block.name,
               input: block.input || {},
@@ -562,52 +611,8 @@ function convertAssistantMessage(msg: AnthropicMessage): {
       }
     }
   }
-
-  // Combine thinking and text
-  let finalContent: string;
-  if (thinkingParts.length > 0) {
-    const thinking = thinkingParts.join("");
-    const text = textParts.join("");
-    if (text) {
-      finalContent = `<thinking>${thinking}</thinking>\n\n${text}`;
-    } else {
-      finalContent = `<thinking>${thinking}</thinking>`;
-    }
-  } else if (textParts.length === 0 && toolUses.length > 0) {
-    // tool_use only - need placeholder content
-    finalContent = " ";
-  } else {
-    finalContent = textParts.join("");
-  }
-
-  const assistantMsg: AssistantResponseMessage = { content: finalContent };
-  if (toolUses.length > 0) {
-    assistantMsg.toolUses = toolUses;
-  }
-
-  return { assistantResponseMessage: assistantMsg };
-}
-
-/** Preserve all content and tool calls from a consecutive run of assistant messages. */
-function mergeAssistantMessages(messages: AnthropicMessage[]): HistoryMessage {
-  if (messages.length === 1) return convertAssistantMessage(messages[0]);
-
-  const contentParts: string[] = [];
-  const toolUses: ToolUseEntry[] = [];
-  for (const msg of messages) {
-    const assistant = convertAssistantMessage(msg).assistantResponseMessage;
-    if (assistant.content.trim()) contentParts.push(assistant.content);
-    if (assistant.toolUses) toolUses.push(...assistant.toolUses);
-  }
-
-  const assistant: AssistantResponseMessage = {
-    content:
-      contentParts.length === 0 && toolUses.length > 0
-        ? " "
-        : contentParts.join("\n\n"),
-  };
-  if (toolUses.length > 0) assistant.toolUses = toolUses;
-  return { assistantResponseMessage: assistant };
+  flush();
+  return result.length ? result : [{ assistantResponseMessage: { content: "" } }];
 }
 
 /**
@@ -643,12 +648,12 @@ function mergeUserMessages(
 
 /**
  * Build history from messages preceding the entire current user turn.
- * Trailing assistant prefills have already been excluded by the caller.
+ * Trailing assistant content is included when requesting a continuation.
  */
 function buildHistory(
-  req: MessagesRequest,
   messages: AnthropicMessage[],
   modelId: string,
+  resolveReasoning?: (signature: string) => string | undefined,
 ): HistoryMessage[] {
   const history: HistoryMessage[] = [];
 
@@ -662,7 +667,7 @@ function buildHistory(
     if (role === "user") {
       history.push(mergeUserMessages(turn, modelId));
     } else if (role === "assistant") {
-      history.push(mergeAssistantMessages(turn));
+      history.push(...convertAssistantMessages(turn, resolveReasoning));
     }
     start = end;
   }
@@ -728,6 +733,7 @@ export function convertRequest(
   req: MessagesRequest,
   options?: {
     supportedExperimentalModels?: readonly string[] | null;
+    resolveReasoning?: (signature: string) => string | undefined;
   },
 ): KiroRequest {
   const toolNames = createToolNameMap(req);
@@ -763,7 +769,9 @@ export function convertRequest(
     throw new ConversionError("empty_messages", "Message list is empty");
   }
 
-  // Kiro cannot represent assistant prefills; the trailing user turn is the current message.
+  // Kiro requires a current user message. A trailing assistant response is
+  // retained in history, followed by an empty user turn for continuation.
+  // This preserves its context without claiming exact prefix completion.
   let currentEnd = req.messages.length;
   while (currentEnd > 0 && req.messages[currentEnd - 1].role !== "user")
     currentEnd--;
@@ -776,6 +784,10 @@ export function convertRequest(
   let currentStart = currentEnd - 1;
   while (currentStart > 0 && req.messages[currentStart - 1].role === "user")
     currentStart--;
+  if (currentEnd < req.messages.length) {
+    currentStart = req.messages.length;
+    currentEnd = req.messages.length;
+  }
 
   // 3. Generate IDs
   const conversationId = getConversationId(req.metadata);
@@ -795,7 +807,11 @@ export function convertRequest(
   // System prompt and thinking tags go at the top of the conversation's first
   // user turn: in history if there is one, otherwise in the current message.
   const preamble = systemPreamble(req);
-  let history = buildHistory(req, req.messages.slice(0, currentStart), modelId);
+  let history = buildHistory(
+    req.messages.slice(0, currentStart),
+    modelId,
+    options?.resolveReasoning,
+  );
   const firstUser = history.find((m) => "userInputMessage" in m) as
     | { userInputMessage: UserInputMessage }
     | undefined;

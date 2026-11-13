@@ -33,6 +33,17 @@ Available endpoints:
 - `POST /v1/messages` — Anthropic JSON and streaming SSE
 - `POST /v1/messages/count_tokens` — local token estimation
 
+Signed thinking and redacted reasoning are replayed through Kiro's native
+`reasoningContent` field. When thinking display is `omitted`, the adapter saves
+the original text locally in SQLite and restores it by signature on later
+requests, including after restarts. Keep the database when resuming or moving
+conversations. Text already discarded by older adapter versions cannot be
+reconstructed from an empty thinking block alone.
+
+Trailing assistant prefills are preserved as history, followed by an empty user
+turn for continuation. This retains their context; Kiro's user-turn request
+format does not guarantee exact prefix completion.
+
 ## Accounts and proxies
 
 The admin page supports bulk imports, token refresh, credit balances, account tests, editing, and pooling with failover. OAuth tokens refresh automatically in the background, and usage is checked periodically.

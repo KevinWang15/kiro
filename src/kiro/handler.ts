@@ -9,6 +9,7 @@ import {
   type KiroRequest,
   type MessagesRequest,
   type SseEvent,
+  type ContentBlock,
 } from "./types.ts";
 import { EventStreamDecoder, parseEventPayload } from "./parser.ts";
 import { convertRequest, overrideThinkingFromModelName } from "./converter.ts";
@@ -23,7 +24,11 @@ import {
   SystemClock,
 } from "./cache-simulation.ts";
 import { sseEventToString, StreamContext } from "./stream.ts";
-import { getConversationId, splitThinking } from "./utils.ts";
+import { getConversationId } from "./utils.ts";
+import {
+  InMemoryReasoningReplayStore,
+  type ReasoningReplayStore,
+} from "./reasoning-replay.ts";
 import { calculateClaudeCost } from "../usage/pricing.ts";
 import { getKiroRuntimeHost } from "./constants.ts";
 import { isExternalIdpAccount } from "../accounts/credential-utils.ts";
@@ -49,8 +54,6 @@ const KIRO_IMPROPERLY_FORMED_REQUEST_PATTERNS = [
 type KiroToolUse = { id: string; name: string; input: Record<string, unknown> };
 
 type KiroAnalysisResult = {
-  content: Array<Record<string, unknown>>;
-  toolUses: KiroToolUse[];
   stopReason: string;
   inputTokens: number;
   outputTokens: number;
@@ -340,8 +343,7 @@ export function getKiroUnrecoverableErrorReason(
  * Build Anthropic message response (non-streaming)
  */
 function buildClaudeMessage(
-  content: Array<Record<string, unknown>>,
-  toolUses: Array<{ id: string; name: string; input: Record<string, unknown> }>,
+  content: ContentBlock[],
   model: string,
   inputTokens: number,
   cacheCreationInputTokens: number,
@@ -350,18 +352,6 @@ function buildClaudeMessage(
   cacheReadInputTokens: number = 0,
 ): Record<string, unknown> {
   const messageId = `msg_${uuidv4().replace(/-/g, "")}`;
-
-  const responseContent: Array<Record<string, unknown>> = [...content];
-
-  // Add tool uses
-  for (const toolUse of toolUses) {
-    responseContent.push({
-      type: "tool_use",
-      id: toolUse.id,
-      name: toolUse.name,
-      input: toolUse.input,
-    });
-  }
 
   return {
     id: messageId,
@@ -376,7 +366,7 @@ function buildClaudeMessage(
       cache_creation_input_tokens: cacheCreationInputTokens,
       cache_read_input_tokens: cacheReadInputTokens,
     },
-    content: responseContent,
+    content,
   };
 }
 
@@ -387,7 +377,10 @@ function buildClaudeMessage(
 export default class KiroApiProviderHandler {
   private readonly cacheSimulator: CacheSimulator;
 
-  constructor(cacheSimulator?: CacheSimulator) {
+  constructor(
+    cacheSimulator?: CacheSimulator,
+    private readonly reasoningReplay: ReasoningReplayStore = new InMemoryReasoningReplayStore(),
+  ) {
     this.cacheSimulator =
       cacheSimulator ??
       new CacheSimulator(new InMemoryCacheStore(new SystemClock()));
@@ -418,6 +411,7 @@ export default class KiroApiProviderHandler {
 
     const result = convertRequest(originalBody, {
       supportedExperimentalModels: extraConfig?.supportedExperimentalModels,
+      resolveReasoning: (signature) => this.reasoningReplay.get(signature),
     });
 
     const request: KiroRequest = {
@@ -463,7 +457,6 @@ export default class KiroApiProviderHandler {
   ): Promise<KiroAnalysisResult> {
     let textContent = "";
     let reasoningText = "";
-    let reasoningSignature = "";
     const toolUses: KiroToolUse[] = [];
     let hasToolUse = false;
     let stopReason = "end_turn";
@@ -480,7 +473,6 @@ export default class KiroApiProviderHandler {
 
         case "reasoning":
           reasoningText += event.text;
-          if (event.signature) reasoningSignature = event.signature;
           break;
 
         case "toolUse": {
@@ -536,34 +528,6 @@ export default class KiroApiProviderHandler {
 
     if (hasToolUse && stopReason === "end_turn") {
       stopReason = "tool_use";
-    }
-
-    // With thinking on, Kiro puts its reasoning inline as <thinking>…</thinking>.
-    // Return it as a separate thinking block, like the streaming path does,
-    // instead of leaving the tags inside the answer text.
-    const content: Array<Record<string, unknown>> = [];
-    if (
-      isThinkingEnabled(requestBody.thinking) &&
-      (reasoningText || reasoningSignature)
-    ) {
-      content.push({
-        type: "thinking",
-        thinking:
-          resolveThinkingDisplay(requestBody.model, requestBody.thinking) ===
-          "omitted"
-            ? ""
-            : reasoningText,
-        signature: reasoningSignature,
-      });
-    }
-    const { thinking, text: answerText } = isThinkingEnabled(requestBody.thinking)
-      ? splitThinking(textContent)
-      : { thinking: "", text: textContent };
-    if (thinking) {
-      content.push({ type: "thinking", thinking });
-    }
-    if (answerText.trim()) {
-      content.push({ type: "text", text: answerText });
     }
 
     const totalContextTokens = contextTotalTokens ?? 0;
@@ -702,8 +666,6 @@ export default class KiroApiProviderHandler {
     }
 
     return {
-      content,
-      toolUses,
       stopReason,
       inputTokens,
       outputTokens,
@@ -711,6 +673,59 @@ export default class KiroApiProviderHandler {
       cacheCreationInputTokens,
       costHeaders,
     };
+  }
+
+  private createStreamContext(request: MessagesRequest, inputTokens: number): StreamContext {
+    return new StreamContext(
+      request.model,
+      inputTokens,
+      isThinkingEnabled(request.thinking),
+      resolveThinkingDisplay(request.model, request.thinking),
+      (signature, thinking) => this.reasoningReplay.set(signature, thinking),
+    );
+  }
+
+  private collectContent(
+    events: KiroEvent[],
+    request: MessagesRequest,
+    modifiedRequest: KiroRequest,
+  ): ContentBlock[] {
+    // Assemble JSON with the SSE state machine so each reasoning block keeps
+    // its own signature and position relative to text and tools.
+    const ctx = this.createStreamContext(request, 0);
+    const content: ContentBlock[] = [];
+    const toolJson = new Map<number, string>();
+    const collect = (events: SseEvent[]) => {
+      for (const { event, data } of events) {
+        const index = data.index as number;
+        if (event === "content_block_start") {
+          content[index] = { ...(data.content_block as ContentBlock) };
+        } else if (event === "content_block_delta") {
+          const block = content[index];
+          const delta = data.delta as Record<string, string>;
+          if (delta.type === "thinking_delta") block.thinking += delta.thinking;
+          else if (delta.type === "signature_delta") block.signature += delta.signature;
+          else if (delta.type === "text_delta") block.text += delta.text;
+          else if (delta.type === "input_json_delta")
+            toolJson.set(index, (toolJson.get(index) ?? "") + delta.partial_json);
+        } else if (event === "content_block_stop" && content[index]?.type === "tool_use") {
+          try {
+            content[index].input = JSON.parse(toolJson.get(index) || "{}");
+          } catch {
+            content[index].input = {};
+          }
+        }
+      }
+    };
+    collect(ctx.generateInitialEvents());
+    for (const event of events) {
+      collect(ctx.processKiroEvent(
+        event,
+        modifiedRequest.conversationState.currentMessage.userInputMessage.modelId,
+      ));
+    }
+    collect(ctx.generateFinalEvents());
+    return content;
   }
 
   async streamResponse(
@@ -721,18 +736,12 @@ export default class KiroApiProviderHandler {
   ): Promise<KiroStreamResult> {
     const toolNames = createToolNameMap(requestBody);
     const decoder = new EventStreamDecoder();
-    const thinkingEnabled = isThinkingEnabled(requestBody.thinking);
     const estimatedInputTokens = estimateInputTokens(
       requestBody.system,
       requestBody.messages,
       requestBody.tools,
     );
-    const ctx = new StreamContext(
-      requestBody.model,
-      estimatedInputTokens,
-      thinkingEnabled,
-      resolveThinkingDisplay(requestBody.model, requestBody.thinking),
-    );
+    const ctx = this.createStreamContext(requestBody, estimatedInputTokens);
     const events: KiroEvent[] = [];
     let lastWriteAt = Date.now();
 
@@ -861,8 +870,7 @@ export default class KiroApiProviderHandler {
     // Streaming requests never come through here: the pool streams them live
     // via streamResponse(). A fully read reply is always returned as JSON.
     const response = buildClaudeMessage(
-      analysis.content,
-      analysis.toolUses,
+      this.collectContent(events, requestBody, modifiedRequestBody),
       requestBody.model,
       analysis.inputTokens,
       analysis.cacheCreationInputTokens,

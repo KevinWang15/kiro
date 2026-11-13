@@ -46,7 +46,7 @@ export function eventFrame(
   return message;
 }
 
-export function reasoningFrame(payload: { text?: string; signature?: string }): Buffer {
+export function reasoningFrame(payload: { text?: string; signature?: string; redactedContent?: string }): Buffer {
   return eventFrame(payload, [
     { name: ":event-type", value: "reasoningContentEvent" },
   ]);

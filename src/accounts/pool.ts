@@ -7,6 +7,7 @@ import KiroApiProviderHandler, {
 } from "../kiro/handler.ts";
 import { CacheSimulator } from "../kiro/cache-simulation.ts";
 import { SqliteCacheStore } from "../kiro/sqlite-cache.ts";
+import { SqliteReasoningReplayStore } from "../kiro/reasoning-replay.ts";
 import { getKiroRuntimeBaseUrl } from "../kiro/constants.ts";
 import { extractSessionId, supportsKiroExperimentalModel } from "../kiro/utils.ts";
 import { hasWebSearchTool, handleWebSearchRequest } from "../kiro/websearch.ts";
@@ -241,6 +242,7 @@ export class KiroAccountPool {
   ) {
     this.handler = new KiroApiProviderHandler(
       new CacheSimulator(new SqliteCacheStore(accounts.database)),
+      new SqliteReasoningReplayStore(accounts.database),
     );
   }
 

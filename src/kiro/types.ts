@@ -17,6 +17,8 @@ export interface ContentBlock {
   type: string;
   text?: string;
   thinking?: string;
+  signature?: string;
+  data?: string;
   tool_use_id?: string;
   tool_name?: string;
   content?: string | ContentBlock[];
@@ -192,6 +194,11 @@ export type HistoryMessage =
 export interface AssistantResponseMessage {
   content: string;
   toolUses?: ToolUseEntry[];
+  // Native AWS union, separate from visible assistant content:
+  // https://github.com/aws/amazon-q-developer-cli/blob/main/crates/amzn-codewhisperer-client/src/protocol_serde/shape_reasoning_content.rs
+  reasoningContent?:
+    | { reasoningText: { text: string; signature: string } }
+    | { redactedContent: string };
 }
 
 // ============================================================================
@@ -201,7 +208,7 @@ export interface AssistantResponseMessage {
 export type KiroEvent =
   | { type: "assistantResponse"; content: string }
   | { type: "toolUse"; data: ToolUseEvent }
-  | { type: "reasoning"; text: string; signature?: string }
+  | { type: "reasoning"; text: string; signature?: string; redactedContent?: string }
   | { type: "contextUsage"; data: { percentage: number } }
   | { type: "creditConsumption"; data: { amount: number } }
   | { type: "refusal"; stopReason: string; message: string }

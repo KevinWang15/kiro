@@ -63,13 +63,17 @@ test("a system entry after a user message stays in that turn, not the next one",
   assert.equal(state.currentMessage.userInputMessage.content, "Two\n<system-reminder>\nbudget B\n</system-reminder>");
 });
 
-test("a system entry after a trailing assistant prefill does not change the current turn", () => {
+test("a system entry after a trailing assistant prefill stays with its user turn in history", () => {
   const state = convert([
     { role: "user", content: "Question" },
     { role: "assistant", content: "Prefill" },
     { role: "system", content: "late context" },
   ]);
-  assert.equal(state.currentMessage.userInputMessage.content, "Question\n<system-reminder>\nlate context\n</system-reminder>");
+  assert.deepEqual(state.history, [
+    { userInputMessage: { content: "Question\n<system-reminder>\nlate context\n</system-reminder>", modelId: "claude-opus-5.5" } },
+    { assistantResponseMessage: { content: "Prefill" } },
+  ]);
+  assert.equal(state.currentMessage.userInputMessage.content, "");
 });
 
 test("empty system entries are dropped and nothing else changes", () => {

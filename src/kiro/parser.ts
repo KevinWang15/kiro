@@ -517,6 +517,9 @@ export function parseEventPayload(
         type: "reasoning",
         text: typeof data.text === "string" ? data.text : "",
         ...(typeof data.signature === "string" ? { signature: data.signature } : {}),
+        ...(typeof data.redactedContent === "string"
+          ? { redactedContent: data.redactedContent }
+          : {}),
       };
     } catch {
       return null;
