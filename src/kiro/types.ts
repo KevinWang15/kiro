@@ -205,15 +205,21 @@ export interface AssistantResponseMessage {
 // Event Stream Types
 // ============================================================================
 
+export interface KiroFailureDetails {
+  messageType?: string;
+  eventType?: string;
+  payload: unknown;
+}
+
 export type KiroEvent =
   | { type: "assistantResponse"; content: string }
   | { type: "toolUse"; data: ToolUseEvent }
   | { type: "reasoning"; text: string; signature?: string; redactedContent?: string }
   | { type: "contextUsage"; data: { percentage: number } }
   | { type: "creditConsumption"; data: { amount: number } }
-  | { type: "refusal"; stopReason: string; message: string }
-  | { type: "error"; errorCode: string; errorMessage: string }
-  | { type: "exception"; exceptionType: string; message: string };
+  | { type: "refusal"; stopReason: string; message: string; upstream?: KiroFailureDetails }
+  | { type: "error"; errorCode: string; errorMessage: string; upstream?: KiroFailureDetails }
+  | { type: "exception"; exceptionType: string; message: string; upstream?: KiroFailureDetails };
 
 export interface ToolUseEvent {
   name: string;

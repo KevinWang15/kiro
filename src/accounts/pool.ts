@@ -1,8 +1,8 @@
 import axios from "axios";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import KiroApiProviderHandler, {
   getKiroUnrecoverableErrorReason,
-  KiroRefusalError,
+  KiroUpstreamError,
   KiroTruncatedError,
 } from "../kiro/handler.ts";
 import { CacheSimulator } from "../kiro/cache-simulation.ts";
@@ -11,7 +11,8 @@ import { SqliteReasoningReplayStore } from "../kiro/reasoning-replay.ts";
 import { getKiroRuntimeBaseUrl } from "../kiro/constants.ts";
 import { extractSessionId, supportsKiroExperimentalModel } from "../kiro/utils.ts";
 import { hasWebSearchTool, handleWebSearchRequest } from "../kiro/websearch.ts";
-import type { MessagesRequest } from "../kiro/types.ts";
+import type { KiroRequest, MessagesRequest } from "../kiro/types.ts";
+import { kiroErrorResponse, type KiroErrorDiagnostics } from "../kiro/errors.ts";
 import type { McpShimConfig } from "../kiro/mcp-shim.ts";
 import type { ProviderExtraConfig } from "../kiro/provider.ts";
 import { buildAgentFromProxy } from "../proxy.ts";
@@ -74,17 +75,6 @@ function shouldAutoDisableCredential(result: PoolResult): boolean {
     result.credentialError !== false &&
     (result.statusCode === 401 || result.statusCode === 403)
   );
-}
-
-function kiroRefusalResponse(error: KiroRefusalError) {
-  return {
-    type: "error",
-    error: {
-      type: error.errorType,
-      code: error.code,
-      message: error.message,
-    },
-  };
 }
 
 export function isQuotaExhausted(
@@ -499,6 +489,9 @@ export class KiroAccountPool {
   ): Promise<PoolResult> {
     const startedAt = Date.now();
     let account = accountRecord;
+    let modifiedRequest: KiroRequest | undefined;
+    let upstreamStatus: number | undefined;
+    let upstreamHeaders: Record<string, unknown> = {};
     try {
       account = await this.tokens.ensureAccountToken(accountRecord);
       const credentials = normalizeKiroExtraConfigAliases(
@@ -537,7 +530,7 @@ export class KiroAccountPool {
       }
 
       const mappedRequest = applyModelMapping(originalRequest, credentials);
-      const modifiedRequest = this.handler.transformRequestBody(
+      modifiedRequest = this.handler.transformRequestBody(
         mappedRequest,
         runtimeCredentials,
       );
@@ -566,6 +559,8 @@ export class KiroAccountPool {
         signal: options.abortSignal,
       });
       const success = response.status >= 200 && response.status < 300;
+      upstreamStatus = response.status;
+      upstreamHeaders = response.headers;
       const publicHeaders = {
         ...(response.headers || {}),
         "content-type": "text/event-stream; charset=utf-8",
@@ -620,34 +615,37 @@ export class KiroAccountPool {
           // Headers are already sent, so the status can't change. End the
           // stream with an SSE error event so the client sees a failure
           // instead of a reply that just stops.
-          const message = (error as Error).message;
-          const refusal = error instanceof KiroRefusalError ? error : null;
+          const upstreamError = error instanceof KiroUpstreamError ? error : null;
+          const failure = upstreamError ? this.describeUpstreamError(
+            upstreamError, originalRequest, modifiedRequest, account.id, upstreamStatus, upstreamHeaders,
+          ) : undefined;
+          const message = failure?.body.error.message ?? (error as Error).message;
           await Promise.resolve(
             options.sink.onChunk(
               `event: error\ndata: ${JSON.stringify(
-                refusal
-                  ? kiroRefusalResponse(refusal)
-                  : {
-                      type: "error",
-                      error: {
-                        type:
-                          error instanceof KiroTruncatedError
-                            ? "overloaded_error"
-                            : "api_error",
-                        message,
-                      },
-                    },
+                failure?.body ?? {
+                  type: "error",
+                  error: {
+                    type:
+                      error instanceof KiroTruncatedError
+                        ? "overloaded_error"
+                        : "api_error",
+                    message,
+                  },
+                },
               )}\n\n`,
             ),
           ).catch(() => {});
           const poolResult = {
             success: false,
             statusCode:
-              refusal?.statusCode ??
+              upstreamError?.statusCode ??
               (error instanceof KiroTruncatedError ? 502 : response.status),
             streamed: true,
             responseHeaders: publicHeaders,
+            response: failure?.body,
             error: `Stream read failed after partial response: ${message}`,
+            credentialError: upstreamError ? false : undefined,
             accountId: account.id,
           };
           this.logAttempt(
@@ -675,24 +673,16 @@ export class KiroAccountPool {
         originalRequest,
         modifiedRequest,
       );
+      if (!success) throw KiroUpstreamError.fromHttp(response.status, transformed.body);
       const responseHeaders = {
         ...(response.headers || {}),
         ...(transformed.headers || {}),
       };
-      const error = success ? undefined : preview(transformed.body);
-      const unrecoverableReason = getKiroUnrecoverableErrorReason(
-        response.status,
-        transformed.body,
-        error,
-      );
       const poolResult: PoolResult = {
-        success,
+        success: true,
         statusCode: response.status,
         response: transformed.body,
         responseHeaders,
-        error,
-        isUnrecoverable: unrecoverableReason !== undefined,
-        unrecoverableReason,
         accountId: account.id,
       };
       this.logAttempt(
@@ -719,30 +709,84 @@ export class KiroAccountPool {
       }
       const axiosError = error as any;
       const response = axiosError.response?.data;
-      const message = (error as Error).message;
-      const refusal = error instanceof KiroRefusalError ? error : null;
+      const upstreamError = error instanceof KiroUpstreamError ? error : null;
+      const failure = upstreamError ? this.describeUpstreamError(
+        upstreamError, originalRequest, modifiedRequest, account.id, upstreamStatus, upstreamHeaders,
+      ) : undefined;
+      const message = failure?.body.error.message ?? (error as Error).message;
       const unrecoverableReason = getKiroUnrecoverableErrorReason(
-        refusal?.statusCode ?? axiosError.response?.status,
-        response,
+        upstreamError?.statusCode ?? axiosError.response?.status,
+        failure?.body ?? response,
         message,
       );
       const poolResult: PoolResult = {
         success: false,
         statusCode:
-          refusal?.statusCode ??
+          upstreamError?.statusCode ??
           (error instanceof KiroTruncatedError
             ? 502
             : axiosError.response?.status || 500),
-        response: refusal ? kiroRefusalResponse(refusal) : response,
+        response: failure?.body ?? response,
+        responseHeaders: failure?.headers,
         error: message,
         isUnrecoverable: unrecoverableReason !== undefined,
         unrecoverableReason,
-        credentialError: refusal ? false : undefined,
+        credentialError: upstreamError && upstreamError.source !== "http" ? false : undefined,
         accountId: account.id,
       };
       this.logAttempt(account.id, originalRequest.model, poolResult, startedAt);
       return poolResult;
     }
+  }
+
+  private describeUpstreamError(
+    error: KiroUpstreamError,
+    request: MessagesRequest,
+    upstream: KiroRequest | undefined,
+    accountId: number,
+    status: number | undefined,
+    headers: Record<string, unknown>,
+  ) {
+    const requestId = ["x-amzn-requestid", "x-amzn-request-id", "x-amz-request-id", "x-request-id", "request-id"]
+      .map((key) => headers[key])
+      .find((value): value is string => typeof value === "string" && value.length > 0);
+    const diagnostics: KiroErrorDiagnostics = {
+      id: randomUUID(),
+      source: error.source,
+      code: error.code,
+      upstream_status: status,
+      upstream_request_id: requestId,
+      message_type: error.upstream?.messageType,
+      event_type: error.upstream?.eventType,
+      payload: error.upstream?.payload,
+      account_id: accountId,
+      requested_model: request.model,
+      upstream_model: upstream?.conversationState.currentMessage.userInputMessage.modelId,
+      conversation_id: upstream?.conversationState.conversationId,
+    };
+    if (upstream) {
+      try {
+        diagnostics.replay = this.handler.getReplayDiagnostics(request, upstream);
+      } catch {
+        // Diagnostic collection must never replace the original provider error.
+      }
+    }
+    const body = kiroErrorResponse(error, diagnostics);
+    console.error(`[kiro-error] ${JSON.stringify({
+      time: new Date().toISOString(),
+      client_status: error.statusCode,
+      original_message: error.message,
+      ...diagnostics,
+    })}`);
+    return {
+      body,
+      headers: {
+        "content-type": "application/json",
+        "x-kiro-diagnostic-id": diagnostics.id,
+        ...(requestId ? { "x-kiro-upstream-request-id": requestId } : {}),
+        ...(status !== undefined ? { "x-kiro-upstream-status": String(status) } : {}),
+      },
+    };
   }
 
   private logAttempt(
@@ -784,14 +828,4 @@ export class KiroAccountPool {
 function numberHeader(headers: Record<string, unknown>, name: string): number {
   const value = Number(headers[name]);
   return Number.isFinite(value) ? value : 0;
-}
-
-function preview(value: unknown): string {
-  if (typeof value === "string") return value.slice(0, 500);
-  if (Buffer.isBuffer(value)) return value.toString("utf8").slice(0, 500);
-  try {
-    return JSON.stringify(value).slice(0, 500);
-  } catch {
-    return String(value).slice(0, 500);
-  }
 }

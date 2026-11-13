@@ -291,12 +291,14 @@ test("requested models reach Kiro unchanged, including Opus and Fable", async (t
   assert.deepEqual(sent, ["claude-opus-4.6", "claude-opus-5.5", "claude-fable-5.1", "claude-sonnet-5.5"]);
 });
 
-test("Kiro errors are passed through unchanged, not cloaked", async (t) => {
+test("Kiro errors preserve their original message and upstream HTTP status", async (t) => {
   const { baseUrl } = await createHarness(t);
   await importAccount(baseUrl, "kiro-error");
   const result = await sendMessage(baseUrl, "claude-sonnet-4-5");
   assert.equal(result.response.status, 403);
   assert.match(JSON.stringify(result.body), /Due to suspicious activity, Kiro has paused this account/);
+  assert.equal(result.body.error.upstream.upstream_status, 403);
+  assert.equal(result.body.error.upstream.source, "http");
   assert.doesNotMatch(JSON.stringify(result.body), /temporary issues/);
 });
 
@@ -338,7 +340,12 @@ test("Kiro metadata refusals preserve their reason without disabling the credent
 
   const json = await sendMessage(baseUrl, "claude-opus-5-5");
   assert.equal(json.response.status, 403);
-  assert.deepEqual(json.body, expected);
+  assert.equal(json.body.type, expected.type);
+  assert.equal(json.body.error.type, expected.error.type);
+  assert.equal(json.body.error.code, expected.error.code);
+  assert.ok(json.body.error.message.startsWith(expected.error.message));
+  assert.equal(json.body.error.upstream.upstream_status, 200);
+  assert.equal(json.body.error.upstream.event_type, "metadataEvent");
 
   const account = await jsonRequest(`${baseUrl}/api/accounts/${accountId}`);
   assert.equal(account.body.autoDisabled, false);
@@ -354,7 +361,11 @@ test("Kiro metadata refusals preserve their reason without disabling the credent
     .filter((line) => line.startsWith("data: "))
     .map((line) => JSON.parse(line.slice(6)))
     .find((event) => event.type === "error");
-  assert.deepEqual(errorEvent, expected);
+  assert.equal(errorEvent.type, expected.type);
+  assert.equal(errorEvent.error.type, expected.error.type);
+  assert.equal(errorEvent.error.code, expected.error.code);
+  assert.ok(errorEvent.error.message.startsWith(expected.error.message));
+  assert.deepEqual(errorEvent.error.upstream.payload, json.body.error.upstream.payload);
   assert.doesNotMatch(sse, /closed the stream|message_stop/);
   assert.equal(inferenceHeaders.filter((headers) => headers.authorization === "Bearer kiro-refusal").length, 2);
 });

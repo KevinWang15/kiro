@@ -10,6 +10,7 @@
  */
 
 import { type KiroEvent, type ToolUseEvent } from "./types.ts";
+import { upstreamErrorCode, upstreamErrorMessage } from "./errors.ts";
 
 // AWS Event Stream constants
 const PRELUDE_SIZE = 12; // 4 (total_len) + 4 (header_len) + 4 (prelude_crc)
@@ -440,8 +441,8 @@ export class EventStreamDecoder {
 /**
  * Parse payload JSON into KiroEvent
  *
- * Note: For 'error' and 'exception' message types, payload is plain text, not JSON.
- * We need headers to determine the message type.
+ * Error and exception payloads may be plain text or JSON. Preserve both forms,
+ * using the event headers to distinguish them from normal response content.
  */
 export function parseEventPayload(
   payload: Uint8Array,
@@ -452,25 +453,38 @@ export function parseEventPayload(
   // Check message type from headers
   const messageType = headers?.get(":message-type") as string | undefined;
   const eventType = headers?.get(":event-type") as string | undefined;
+  let originalPayload: unknown;
+  try {
+    originalPayload = JSON.parse(text);
+  } catch {
+    originalPayload = text;
+  }
+  const upstream = {
+    ...(messageType ? { messageType } : {}),
+    ...(eventType ? { eventType } : {}),
+    payload: originalPayload,
+  };
 
-  // Handle error message type (payload is plain text)
+  // Handle error message type, preserving its original structured body.
   if (messageType === "error") {
-    const errorCode = (headers?.get(":error-code") as string) || "UnknownError";
+    const errorCode = (headers?.get(":error-code") as string) || upstreamErrorCode(originalPayload, "UnknownError");
     return {
       type: "error",
       errorCode,
-      errorMessage: text,
+      errorMessage: upstreamErrorMessage(originalPayload, text),
+      upstream,
     };
   }
 
-  // Handle exception message type (payload is plain text)
+  // Handle exception message type, preserving its original structured body.
   if (messageType === "exception") {
     const exceptionType =
       (headers?.get(":exception-type") as string) || "UnknownException";
     return {
       type: "exception",
       exceptionType,
-      message: text,
+      message: upstreamErrorMessage(originalPayload, text),
+      upstream,
     };
   }
 
@@ -478,17 +492,18 @@ export function parseEventPayload(
     try {
       const data = JSON.parse(text);
       const refusal = data.stopDetails?.refusal;
-      if (refusal) {
+      if (refusal || data.stopReason === "CONTENT_FILTERED") {
         return {
           type: "refusal",
           stopReason:
             typeof data.stopReason === "string"
               ? data.stopReason
-              : "CONTENT_FILTERED",
+              : "UNKNOWN_REFUSAL",
           message:
-            typeof refusal.explanation === "string"
+            typeof refusal?.explanation === "string"
               ? refusal.explanation
-              : "Kiro refused the request",
+              : upstreamErrorMessage(data, "Kiro refused the request"),
+          upstream,
         };
       }
     } catch {
@@ -560,6 +575,7 @@ export function parseEventPayload(
         type: "error",
         errorCode: data.errorCode,
         errorMessage: data.errorMessage || "",
+        upstream,
       };
     }
 
@@ -569,6 +585,7 @@ export function parseEventPayload(
         type: "exception",
         exceptionType: data.exceptionType,
         message: data.message || "",
+        upstream,
       };
     }
 

@@ -444,6 +444,9 @@ export function createServerContext(database: AppDatabase): ServerContext {
         res.end();
         return;
       }
+      for (const [name, value] of Object.entries(result.responseHeaders || {})) {
+        if (name.startsWith("x-kiro-") && value !== undefined) res.setHeader(name, String(value));
+      }
       // Only web search answers a streaming request with a prebuilt SSE string;
       // everything else streamed live above (result.streamed).
       if (body.stream && typeof result.response === "string")

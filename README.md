@@ -44,6 +44,15 @@ Trailing assistant prefills are preserved as history, followed by an empty user
 turn for continuation. This retains their context; Kiro's user-turn request
 format does not guarantee exact prefix completion.
 
+API failures include Kiro's original error code, event metadata, upstream HTTP
+status, request ID, and a local diagnostic ID in `error.message` and
+`error.upstream`, for both JSON and SSE responses. Matching `[kiro-error]` server
+log entries include replay/cache counts and the requested and upstream model IDs.
+Replay diagnostics contain counts without dumping request bodies or
+authorization headers.
+An error with client status 403 and `upstream_http=200` is an adapter-reported
+refusal in Kiro's response stream; it is distinct from an upstream HTTP 403.
+
 ## Accounts and proxies
 
 The admin page supports bulk imports, token refresh, credit balances, account tests, editing, and pooling with failover. OAuth tokens refresh automatically in the background, and usage is checked periodically.

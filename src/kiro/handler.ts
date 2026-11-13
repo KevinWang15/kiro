@@ -29,6 +29,8 @@ import {
   InMemoryReasoningReplayStore,
   type ReasoningReplayStore,
 } from "./reasoning-replay.ts";
+import { KiroRefusalError, KiroUpstreamError } from "./errors.ts";
+export { KiroRefusalError, KiroUpstreamError } from "./errors.ts";
 import { calculateClaudeCost } from "../usage/pricing.ts";
 import { getKiroRuntimeHost } from "./constants.ts";
 import { isExternalIdpAccount } from "../accounts/credential-utils.ts";
@@ -79,19 +81,6 @@ type KiroFailureEvent = Extract<
   { type: "error" | "exception" | "refusal" }
 >;
 
-export class KiroRefusalError extends Error {
-  readonly statusCode = 403;
-  readonly errorType = "permission_error";
-
-  constructor(
-    public readonly code: string,
-    message: string,
-  ) {
-    super(message);
-    this.name = "KiroRefusalError";
-  }
-}
-
 function isKiroFailureEvent(event: KiroEvent): event is KiroFailureEvent {
   return (
     event.type === "error" ||
@@ -114,10 +103,15 @@ function getKiroFailureMessage(event: KiroFailureEvent): string {
   return event.message;
 }
 
-function getKiroFailureError(event: KiroFailureEvent): Error {
+function getKiroFailureError(event: KiroFailureEvent): KiroUpstreamError {
   if (event.type === "refusal")
-    return new KiroRefusalError(event.stopReason, event.message);
-  return new Error(getKiroFailureMessage(event));
+    return new KiroRefusalError(event.stopReason, event.message, event.upstream);
+  return new KiroUpstreamError(
+    event.type === "error" ? event.errorCode : event.exceptionType,
+    getKiroFailureMessage(event),
+    event.type,
+    event.upstream,
+  );
 }
 
 // Longest the client goes without an SSE event while Kiro is still sending
@@ -685,6 +679,56 @@ export default class KiroApiProviderHandler {
     );
   }
 
+  /** Structural diagnostics only: never include prompt text or signatures. */
+  getReplayDiagnostics(request: MessagesRequest, upstream: KiroRequest): Record<string, number> {
+    const stats = {
+      input_messages: request.messages.length,
+      thinking_blocks: 0,
+      signed_thinking_blocks: 0,
+      empty_signed_thinking_blocks: 0,
+      replay_cache_hits: 0,
+      replay_cache_misses: 0,
+      replay_text_mismatches: 0,
+      input_redacted_blocks: 0,
+      history_messages: upstream.conversationState.history?.length ?? 0,
+      native_reasoning_blocks: 0,
+      empty_native_reasoning_blocks: 0,
+      native_redacted_blocks: 0,
+      consecutive_assistant_entries: 0,
+    };
+    for (const message of request.messages) {
+      if (message.role !== "assistant" || !Array.isArray(message.content)) continue;
+      for (const block of message.content) {
+        if (block.type === "redacted_thinking") stats.input_redacted_blocks++;
+        if (block.type !== "thinking") continue;
+        stats.thinking_blocks++;
+        if (!block.signature) continue;
+        stats.signed_thinking_blocks++;
+        if (!block.thinking) stats.empty_signed_thinking_blocks++;
+        const saved = this.reasoningReplay.get(block.signature);
+        if (saved === undefined) stats.replay_cache_misses++;
+        else {
+          stats.replay_cache_hits++;
+          if (block.thinking && saved !== block.thinking) stats.replay_text_mismatches++;
+        }
+      }
+    }
+    let previousAssistant = false;
+    for (const message of upstream.conversationState.history ?? []) {
+      const assistant = "assistantResponseMessage" in message;
+      if (assistant) {
+        if (previousAssistant) stats.consecutive_assistant_entries++;
+        const reasoning = message.assistantResponseMessage.reasoningContent;
+        if (reasoning && "reasoningText" in reasoning) {
+          stats.native_reasoning_blocks++;
+          if (!reasoning.reasoningText.text) stats.empty_native_reasoning_blocks++;
+        } else if (reasoning && "redactedContent" in reasoning) stats.native_redacted_blocks++;
+      }
+      previousAssistant = assistant;
+    }
+    return stats;
+  }
+
   private collectContent(
     events: KiroEvent[],
     request: MessagesRequest,
@@ -843,19 +887,18 @@ export default class KiroApiProviderHandler {
     modifiedRequestBody: KiroRequest,
   ): Promise<{ body: unknown; headers?: Record<string, string> }> {
     if (statusCode != 200) {
-      // Kiro's error is passed through unchanged.
+      // Preserve the original provider body for the pool's error diagnostics.
       const responseString = Buffer.isBuffer(responseBody)
         ? responseBody.toString()
         : Buffer.from(responseBody, "utf-8").toString();
 
-      // Kiro sometimes answers errors with plain text or HTML. Keep its words
-      // instead of surfacing a JSON parse error as the failure reason.
+      // Plain text and HTML remain available in full; JSON parsing must not
+      // replace the upstream failure or cut off the useful part of its message.
       let parsedBody: unknown;
       try {
         parsedBody = JSON.parse(responseString);
       } catch {
-        const text = responseString.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim().slice(0, 300);
-        parsedBody = { message: text ? `Kiro returned HTTP ${statusCode}: ${text}` : `Kiro returned HTTP ${statusCode} with no details` };
+        parsedBody = responseString;
       }
       return { body: parsedBody };
     }
