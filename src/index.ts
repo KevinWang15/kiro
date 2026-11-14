@@ -47,7 +47,21 @@ const usageTimer = setInterval(() => {
 }, config.usageIntervalMs);
 usageTimer.unref();
 
-function shutdown(): void {
+// Streaming replies can run for minutes, so in-flight requests get a short
+// grace period. Closing their connections also aborts the upstream Kiro call
+// (see the response "close" handler in server.ts).
+const SHUTDOWN_GRACE_MS = 5_000;
+let shuttingDown = false;
+
+function shutdown(signal: NodeJS.Signals): void {
+  if (shuttingDown) {
+    console.log(`${signal} received again, exiting now`);
+    process.exit(1);
+  }
+  shuttingDown = true;
+  console.log(
+    `${signal} received, waiting up to ${SHUTDOWN_GRACE_MS / 1000}s for in-flight requests (press Ctrl+C again to exit now)`,
+  );
   clearInterval(versionTimer);
   clearInterval(refreshTimer);
   clearInterval(usageTimer);
@@ -57,6 +71,7 @@ function shutdown(): void {
     context.database.close();
     process.exit(0);
   });
+  setTimeout(() => server.closeAllConnections(), SHUTDOWN_GRACE_MS).unref();
 }
 
 process.on("SIGINT", shutdown);
