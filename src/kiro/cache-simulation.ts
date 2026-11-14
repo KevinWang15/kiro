@@ -8,6 +8,8 @@ export interface IClock {
 export interface ICacheStore {
   get(key: string): Promise<number | null>;
   set(key: string, tokenCount: number, ttlMs: number): Promise<void>;
+  /** Live entries among `keys`; missing or expired keys are left out. */
+  getMany(keys: string[]): Promise<Map<string, number>>;
 }
 
 export class SystemClock implements IClock {
@@ -57,6 +59,15 @@ export class InMemoryCacheStore implements ICacheStore {
   async set(key: string, tokenCount: number, ttlMs: number): Promise<void> {
     this.entries.set(key, { tokenCount, expireAtMs: this.clock.now() + ttlMs });
   }
+
+  async getMany(keys: string[]): Promise<Map<string, number>> {
+    const found = new Map<string, number>();
+    for (const key of keys) {
+      const tokenCount = await this.get(key);
+      if (tokenCount !== null) found.set(key, tokenCount);
+    }
+    return found;
+  }
 }
 
 function stableStringify(value: unknown): string {
@@ -95,23 +106,46 @@ function normalizeContent(content: string | unknown[]): unknown {
   });
 }
 
+// hashes[k] identifies the conversation ID, system prompt and first k
+// messages. Each hash chains the previous one (fixed-length hex) with the next
+// message, so all prefixes cost one pass over the conversation.
+function computePrefixHashes(
+  system: SystemMessage[] | string | undefined,
+  messages: AnthropicMessage[],
+  conversationId?: string,
+): string[] {
+  let hash = crypto
+    .createHash("sha256")
+    .update(
+      stableStringify({
+        conversationId: conversationId ?? null,
+        system: normalizeSystem(system),
+      }),
+    )
+    .digest("hex");
+  const hashes = [hash];
+  for (const message of messages) {
+    hash = crypto
+      .createHash("sha256")
+      .update(hash)
+      .update(
+        stableStringify({
+          role: message.role,
+          content: normalizeContent(message.content as string | unknown[]),
+        }),
+      )
+      .digest("hex");
+    hashes.push(hash);
+  }
+  return hashes;
+}
+
 export function computePrefixHash(
   system: SystemMessage[] | string | undefined,
   messages: AnthropicMessage[],
   conversationId?: string,
 ): string {
-  const canonical = {
-    conversationId: conversationId ?? null,
-    system: normalizeSystem(system),
-    messages: messages.map((message) => ({
-      role: message.role,
-      content: normalizeContent(message.content as string | unknown[]),
-    })),
-  };
-  return crypto
-    .createHash("sha256")
-    .update(stableStringify(canonical))
-    .digest("hex");
+  return computePrefixHashes(system, messages, conversationId).at(-1)!;
 }
 
 export const CACHE_KEY_PREFIX = "kiro_cache_sim:";
@@ -130,9 +164,11 @@ export class CacheSimulator {
     totalContextTokens: number,
     conversationId?: string,
   ): Promise<number> {
+    const keys = computePrefixHashes(system, messages, conversationId).map(
+      (hash) => CACHE_KEY_PREFIX + hash,
+    );
     if (totalContextTokens > 0) {
-      const fullKey =
-        CACHE_KEY_PREFIX + computePrefixHash(system, messages, conversationId);
+      const fullKey = keys[messages.length];
       try {
         await this.store.set(fullKey, totalContextTokens, this.ttlMs);
       } catch (error) {
@@ -140,17 +176,18 @@ export class CacheSimulator {
       }
     }
 
-    for (let length = messages.length - 1; length >= 1; length -= 1) {
-      const key =
-        CACHE_KEY_PREFIX +
-        computePrefixHash(system, messages.slice(0, length), conversationId);
-      try {
-        const storedTokens = await this.store.get(key);
-        if (storedTokens !== null && storedTokens > 0) return storedTokens;
-      } catch (error) {
-        console.warn("[CacheSimulator] Cache lookup failed:", error);
-        break;
-      }
+    // Prefixes shorter than the request, longest first.
+    const candidates = keys.slice(1, messages.length).reverse();
+    let found: Map<string, number>;
+    try {
+      found = await this.store.getMany(candidates);
+    } catch (error) {
+      console.warn("[CacheSimulator] Cache lookup failed:", error);
+      return 0;
+    }
+    for (const key of candidates) {
+      const storedTokens = found.get(key);
+      if (storedTokens !== undefined && storedTokens > 0) return storedTokens;
     }
     return 0;
   }
