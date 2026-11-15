@@ -11,6 +11,7 @@ import { SqliteReasoningReplayStore } from "../kiro/reasoning-replay.ts";
 import { getKiroRuntimeBaseUrl } from "../kiro/constants.ts";
 import { extractSessionId, supportsKiroExperimentalModel } from "../kiro/utils.ts";
 import { hasWebSearchTool, handleWebSearchRequest } from "../kiro/websearch.ts";
+import { rewriteAgentLabelRequest } from "../kiro/agent-label.ts";
 import type { KiroRequest, MessagesRequest } from "../kiro/types.ts";
 import { kiroErrorResponse, type KiroErrorDiagnostics } from "../kiro/errors.ts";
 import type { McpShimConfig } from "../kiro/mcp-shim.ts";
@@ -297,7 +298,21 @@ export class KiroAccountPool {
     originalRequest: MessagesRequest,
     options: AttemptOptions = {},
   ): Promise<PoolResult> {
-    const request = withCacheMetadata(structuredClone(originalRequest));
+    const label = rewriteAgentLabelRequest(
+      originalRequest,
+      options.requestHeaders?.["user-agent"],
+    );
+    if (label)
+      routeLog("agent-label", {
+        session: shortSession(originalRequest.metadata?.user_id),
+        from: label.fromModel,
+        messages: label.fromMessages,
+        to: label.request.model,
+        noteChars: label.noteChars,
+      });
+    const request = withCacheMetadata(
+      structuredClone(label?.request ?? originalRequest),
+    );
     const allAccounts = this.accounts.listEnabled();
     if (!allAccounts.length) {
       return {

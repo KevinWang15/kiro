@@ -1,11 +1,13 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import fs from "node:fs";
 import http from "node:http";
+import path from "node:path";
 import { type AddressInfo } from "node:net";
 import { AppDatabase } from "../src/db.ts";
 import { createServerContext } from "../src/server.ts";
 import { config } from "../src/config.ts";
-import { eventFrame, successfulKiroStream } from "./helpers.ts";
+import { claudeCodeLabelPrompt, eventFrame, successfulKiroStream } from "./helpers.ts";
 
 async function listen(server: http.Server): Promise<string> {
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
@@ -289,6 +291,69 @@ test("requested models reach Kiro unchanged, including Opus and Fable", async (t
   }
   const sent = inferenceBodies.map((b) => b.conversationState.currentMessage.userInputMessage.modelId);
   assert.deepEqual(sent, ["claude-opus-4.6", "claude-opus-5.5", "claude-fable-5.1", "claude-sonnet-5.5"]);
+});
+
+test("Claude Code progress labels go to Haiku with notes; other turns keep their model", async (t) => {
+  const { baseUrl, inferenceBodies } = await createHarness(t);
+  await importAccount(baseUrl, "good-key");
+  const conversation = [
+    { role: "user", content: "Fix the null check in validate.ts" },
+    { role: "assistant", content: [{ type: "tool_use", id: "toolu_1", name: "Read", input: { file_path: "src/validate.ts" } }] },
+    { role: "user", content: [{ type: "tool_result", tool_use_id: "toolu_1", content: "export function validate() {}" }] },
+  ];
+  const send = (lastText: string, userAgent: string) =>
+    jsonRequest(`${baseUrl}/v1/messages`, {
+      method: "POST",
+      headers: { "user-agent": userAgent },
+      body: JSON.stringify({
+        model: "claude-opus-5-5",
+        max_tokens: 32000,
+        system: "You are Claude Code.",
+        tools: [{ name: "Read", input_schema: { type: "object" } }],
+        thinking: { type: "adaptive" },
+        messages: [...conversation, { role: "user", content: [{ type: "text", text: lastText }] }],
+      }),
+    });
+  const sentModel = (index: number) => inferenceBodies[index].conversationState.currentMessage.userInputMessage.modelId;
+
+  const label = await send(claudeCodeLabelPrompt(), "claude-cli/2.1.287 (external, cli)");
+  assert.equal(label.response.status, 200);
+  assert.equal(label.body.model, "claude-haiku-4-5-20251001", "the response names the model that served it");
+  assert.equal(sentModel(0), "claude-haiku-4.5");
+  const state = inferenceBodies[0].conversationState;
+  assert.equal(state.history, undefined, "one message, not the subagent's conversation");
+  assert.equal(state.currentMessage.userInputMessage.userInputMessageContext?.tools, undefined);
+  const content = state.currentMessage.userInputMessage.content;
+  assert.match(content, /^You write a 3-5 word progress label/);
+  assert.match(content, /<notes>\nuser: Fix the null check in validate.ts\ncall Read\(\{"file_path":"src\/validate.ts"\}\)\nresult: export function validate\(\) \{\}\n<\/notes>/);
+  assert.doesNotMatch(content, /You are Claude Code\./);
+
+  const turn = await send("Now run the tests.", "claude-cli/2.1.287 (external, cli)");
+  assert.equal(turn.body.model, "claude-opus-5-5");
+  assert.equal(sentModel(1), "claude-opus-5.5");
+  const otherClient = await send(claudeCodeLabelPrompt(), "curl/8.5.0");
+  assert.equal(otherClient.body.model, "claude-opus-5-5");
+  assert.equal(sentModel(2), "claude-opus-5.5");
+
+  // The request Claude Code 2.1.287 really sends: prompt merged after the tool
+  // result, system messages after it.
+  const captured = JSON.parse(fs.readFileSync(path.resolve(process.cwd(), "test/fixtures/claude-code-2.1.287-agent-label.json"), "utf8"));
+  const real = await jsonRequest(`${baseUrl}/v1/messages`, {
+    method: "POST",
+    headers: { "user-agent": "claude-cli/2.1.287 (external, cli)" },
+    body: JSON.stringify({ ...captured, stream: false }),
+  });
+  assert.equal(real.response.status, 200);
+  assert.equal(real.body.model, "claude-haiku-4-5-20251001");
+  assert.equal(sentModel(3), "claude-haiku-4.5");
+  assert.equal(inferenceBodies[3].conversationState.history, undefined);
+
+  const history = await jsonRequest(`${baseUrl}/api/history`);
+  assert.deepEqual(
+    history.body.entries.map((entry: any) => entry.model).reverse(),
+    ["claude-haiku-4-5-20251001", "claude-opus-5-5", "claude-opus-5-5", "claude-haiku-4-5-20251001"],
+    "the request log records the model actually used",
+  );
 });
 
 test("Kiro errors preserve their original message and upstream HTTP status", async (t) => {

@@ -70,3 +70,15 @@ export function successfulKiroStream(
     ]),
   ]);
 }
+
+// Claude Code's background-agent label prompt. The fixed lines are
+// byte-identical from 2.1.232 to 2.1.322; `previous` is the optional
+// "Previous:" line in the form each release wrote it, or "".
+export function claudeCodeLabelPrompt(subject = "your", doNotUseTools = " Do not use tools.", previous = ""): string {
+  return (
+    `Describe ${subject} most recent action in 3-5 words using present tense (-ing). Name the file or function, not the branch.${doNotUseTools}\n` +
+    (previous ? `\n${previous}\n` : "") +
+    '\nGood: "Reading runAgent.ts"\nGood: "Fixing null check in validate.ts"\nGood: "Running auth module tests"\nGood: "Adding retry logic to fetchUser"\n\n' +
+    'Bad (past tense): "Analyzed the branch diff"\nBad (too vague): "Investigating the issue"\nBad (too long): "Reviewing full branch diff and AgentTool.tsx integration"\nBad (branch name): "Analyzed adam/background-summary branch diff"'
+  );
+}
