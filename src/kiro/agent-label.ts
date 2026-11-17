@@ -10,7 +10,7 @@ import type { AnthropicMessage, ContentBlock, MessagesRequest } from "./types.ts
 // conversation, and the original instruction, on Haiku with no tools or
 // thinking.
 
-export const AGENT_LABEL_MODEL = "claude-haiku-4-5-20251001";
+export const AGENT_LABEL_MODEL = "claude-haiku-5-5";
 
 // The label prompt is the same in every Claude Code release from 2.1.232 to
 // 2.1.322; only its optional "Previous: <label>" line changed. Both anchors

@@ -293,7 +293,7 @@ test("requested models reach Kiro unchanged, including Opus and Fable", async (t
   assert.deepEqual(sent, ["claude-opus-4.6", "claude-opus-5.5", "claude-fable-5.1", "claude-sonnet-5.5"]);
 });
 
-test("Claude Code progress labels go to Haiku with notes; other turns keep their model", async (t) => {
+test("Claude Code progress labels go to Haiku 5.5 with notes; other turns keep their model", async (t) => {
   const { baseUrl, inferenceBodies } = await createHarness(t);
   await importAccount(baseUrl, "good-key");
   const conversation = [
@@ -318,8 +318,8 @@ test("Claude Code progress labels go to Haiku with notes; other turns keep their
 
   const label = await send(claudeCodeLabelPrompt(), "claude-cli/2.1.287 (external, cli)");
   assert.equal(label.response.status, 200);
-  assert.equal(label.body.model, "claude-haiku-4-5-20251001", "the response names the model that served it");
-  assert.equal(sentModel(0), "claude-haiku-4.5");
+  assert.equal(label.body.model, "claude-haiku-5-5", "the response names the model that served it");
+  assert.equal(sentModel(0), "claude-haiku-5.5");
   const state = inferenceBodies[0].conversationState;
   assert.equal(state.history, undefined, "one message, not the subagent's conversation");
   assert.equal(state.currentMessage.userInputMessage.userInputMessageContext?.tools, undefined);
@@ -344,14 +344,14 @@ test("Claude Code progress labels go to Haiku with notes; other turns keep their
     body: JSON.stringify({ ...captured, stream: false }),
   });
   assert.equal(real.response.status, 200);
-  assert.equal(real.body.model, "claude-haiku-4-5-20251001");
-  assert.equal(sentModel(3), "claude-haiku-4.5");
+  assert.equal(real.body.model, "claude-haiku-5-5");
+  assert.equal(sentModel(3), "claude-haiku-5.5");
   assert.equal(inferenceBodies[3].conversationState.history, undefined);
 
   const history = await jsonRequest(`${baseUrl}/api/history`);
   assert.deepEqual(
     history.body.entries.map((entry: any) => entry.model).reverse(),
-    ["claude-haiku-4-5-20251001", "claude-opus-5-5", "claude-opus-5-5", "claude-haiku-4-5-20251001"],
+    ["claude-haiku-5-5", "claude-opus-5-5", "claude-opus-5-5", "claude-haiku-5-5"],
     "the request log records the model actually used",
   );
 });
