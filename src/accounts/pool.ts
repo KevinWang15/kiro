@@ -2,13 +2,28 @@ import axios from "axios";
 import { createHash, randomUUID } from "node:crypto";
 import KiroApiProviderHandler, {
   getKiroUnrecoverableErrorReason,
+  kiroIdeIdentity,
+  kiroTokenType,
   KiroUpstreamError,
   KiroTruncatedError,
 } from "../kiro/handler.ts";
+import {
+  createResponseHeaders,
+  featureConfigHeaders,
+  featureConfigQuery,
+  FEATURE_CONFIG_TIMEOUT_MS,
+  ModelApiSelector,
+  parseFeatureConfiguration,
+  toCreateResponseRequest,
+  type KiroModelApi,
+} from "../kiro/create-response.ts";
 import { CacheSimulator } from "../kiro/cache-simulation.ts";
 import { SqliteCacheStore } from "../kiro/sqlite-cache.ts";
 import { SqliteReasoningReplayStore } from "../kiro/reasoning-replay.ts";
-import { getKiroRuntimeBaseUrl } from "../kiro/constants.ts";
+import {
+  getKiroRuntimeBaseUrl,
+  getKiroServiceBaseUrl,
+} from "../kiro/constants.ts";
 import { extractSessionId, supportsKiroExperimentalModel } from "../kiro/utils.ts";
 import { hasWebSearchTool, handleWebSearchRequest } from "../kiro/websearch.ts";
 import { rewriteAgentLabelRequest } from "../kiro/agent-label.ts";
@@ -59,6 +74,7 @@ export interface PoolResult {
   unrecoverableReason?: string;
   credentialError?: boolean;
   accountId?: number;
+  api?: KiroModelApi;
 }
 
 interface AttemptOptions {
@@ -224,6 +240,7 @@ class AccountRateLimiter {
 export class KiroAccountPool {
   private readonly handler: KiroApiProviderHandler;
   private readonly rateLimiter = new AccountRateLimiter();
+  private readonly modelApis = new ModelApiSelector();
 
   constructor(
     private readonly accounts: AccountRepository,
@@ -383,6 +400,7 @@ export class KiroAccountPool {
         attempt,
         status: result.statusCode,
         ok: Boolean(result.success),
+        ...(result.api ? { api: result.api } : {}),
         ms: Date.now() - requestStarted,
         ...(result.success ? {} : { error: String(result.error || "").slice(0, 200) }),
       });
@@ -507,6 +525,7 @@ export class KiroAccountPool {
     let modifiedRequest: KiroRequest | undefined;
     let upstreamStatus: number | undefined;
     let upstreamHeaders: Record<string, unknown> = {};
+    let api: KiroModelApi | undefined;
     try {
       account = await this.tokens.ensureAccountToken(accountRecord);
       const credentials = normalizeKiroExtraConfigAliases(
@@ -551,23 +570,43 @@ export class KiroAccountPool {
         mappedRequest,
         runtimeCredentials,
       );
-      const headers = this.handler.buildHeaders(
-        account.accessToken!,
+      const httpsAgent = buildAgentFromProxy(proxy || undefined);
+      api = await this.selectModelApi(
+        account,
         runtimeCredentials,
+        modifiedRequest.profileArn,
+        httpsAgent,
+        options.abortSignal,
       );
+      let url: string;
+      let headers: Record<string, string>;
+      let body: unknown;
+      if (api === "createResponse") {
+        url = `${config.upstreamBaseUrl || getKiroServiceBaseUrl(credentials)}/v1/responses`;
+        headers = createResponseHeaders(
+          account.accessToken!,
+          kiroIdeIdentity(runtimeCredentials),
+          modifiedRequest.profileArn,
+          kiroTokenType(runtimeCredentials),
+        );
+        body = toCreateResponseRequest(modifiedRequest);
+      } else {
+        url = `${config.upstreamBaseUrl || getKiroRuntimeBaseUrl(credentials)}/generateAssistantResponse`;
+        headers = this.handler.buildHeaders(
+          account.accessToken!,
+          runtimeCredentials,
+        );
+        body = modifiedRequest;
+      }
       const anthropicBeta = options.requestHeaders?.["anthropic-beta"];
       if (anthropicBeta) headers["anthropic-beta"] = String(anthropicBeta);
       if (runtimeCredentials.deleteAnthropicBetaHeader)
         delete headers["anthropic-beta"];
-      const baseUrl =
-        config.upstreamBaseUrl || getKiroRuntimeBaseUrl(credentials);
-      const url = `${baseUrl}/generateAssistantResponse`;
-      const httpsAgent = buildAgentFromProxy(proxy || undefined);
       const response = await axios({
         method: "POST",
         url,
         headers,
-        data: modifiedRequest,
+        data: body,
         timeout: config.requestTimeoutMs,
         validateStatus: () => true,
         responseType: "stream",
@@ -604,6 +643,7 @@ export class KiroAccountPool {
                 await options.sink!.onChunk(chunk);
               },
             },
+            api,
           );
           const poolResult = {
             success: true,
@@ -611,6 +651,7 @@ export class KiroAccountPool {
             streamed: true,
             responseHeaders: { ...publicHeaders, ...streamed.internalHeaders },
             accountId: account.id,
+            api,
           };
           this.logAttempt(
             account.id,
@@ -628,13 +669,14 @@ export class KiroAccountPool {
               statusCode: 499,
               error: "Request canceled",
               accountId: account.id,
+              api,
             };
           // Headers are already sent, so the status can't change. End the
           // stream with an SSE error event so the client sees a failure
           // instead of a reply that just stops.
           const upstreamError = error instanceof KiroUpstreamError ? error : null;
           const failure = upstreamError ? this.describeUpstreamError(
-            upstreamError, originalRequest, modifiedRequest, account.id, upstreamStatus, upstreamHeaders,
+            upstreamError, originalRequest, modifiedRequest, account.id, upstreamStatus, upstreamHeaders, api,
           ) : undefined;
           const message = failure?.body.error.message ?? (error as Error).message;
           await Promise.resolve(
@@ -664,6 +706,7 @@ export class KiroAccountPool {
             error: `Stream read failed after partial response: ${message}`,
             credentialError: upstreamError ? false : undefined,
             accountId: account.id,
+            api,
           };
           this.logAttempt(
             account.id,
@@ -689,6 +732,7 @@ export class KiroAccountPool {
         responseData,
         originalRequest,
         modifiedRequest,
+        api,
       );
       if (!success) throw KiroUpstreamError.fromHttp(response.status, transformed.body);
       const responseHeaders = {
@@ -701,6 +745,7 @@ export class KiroAccountPool {
         response: transformed.body,
         responseHeaders,
         accountId: account.id,
+        api,
       };
       this.logAttempt(
         account.id,
@@ -728,7 +773,7 @@ export class KiroAccountPool {
       const response = axiosError.response?.data;
       const upstreamError = error instanceof KiroUpstreamError ? error : null;
       const failure = upstreamError ? this.describeUpstreamError(
-        upstreamError, originalRequest, modifiedRequest, account.id, upstreamStatus, upstreamHeaders,
+        upstreamError, originalRequest, modifiedRequest, account.id, upstreamStatus, upstreamHeaders, api,
       ) : undefined;
       const message = failure?.body.error.message ?? (error as Error).message;
       const unrecoverableReason = getKiroUnrecoverableErrorReason(
@@ -750,10 +795,48 @@ export class KiroAccountPool {
         unrecoverableReason,
         credentialError: upstreamError && upstreamError.source !== "http" ? false : undefined,
         accountId: account.id,
+        api,
       };
       this.logAttempt(account.id, originalRequest.model, poolResult, startedAt);
       return poolResult;
     }
+  }
+
+  // The chat API Kiro assigned the account: CreateResponse for accounts in
+  // the IDE's create_response_api experiment, else generateAssistantResponse.
+  // An unreadable configuration leaves the account on generateAssistantResponse.
+  private selectModelApi(
+    account: AccountRecord,
+    credentials: ProviderExtraConfig,
+    profileArn: string | undefined,
+    httpsAgent: ReturnType<typeof buildAgentFromProxy>,
+    signal: AbortSignal | undefined,
+  ): Promise<KiroModelApi> {
+    const identity = createHash("sha256")
+      .update(`${account.accessToken}\0${profileArn ?? ""}`)
+      .digest("hex");
+    return this.modelApis.select(account.id, identity, async () => {
+      const timeout = AbortSignal.timeout(FEATURE_CONFIG_TIMEOUT_MS);
+      const response = await axios.get(
+        `${config.upstreamBaseUrl || getKiroServiceBaseUrl(credentials)}/featureConfiguration`,
+        {
+          params: featureConfigQuery(kiroIdeIdentity(credentials).kiroVersion),
+          headers: featureConfigHeaders(
+            account.accessToken!,
+            kiroIdeIdentity(credentials),
+            profileArn,
+            kiroTokenType(credentials),
+          ),
+          validateStatus: () => true,
+          httpsAgent,
+          ...(httpsAgent ? { proxy: false as const } : {}),
+          signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
+        },
+      );
+      if (response.status !== 200)
+        throw new Error(`featureConfiguration returned HTTP ${response.status}`);
+      return parseFeatureConfiguration(response.data);
+    });
   }
 
   private describeUpstreamError(
@@ -763,6 +846,7 @@ export class KiroAccountPool {
     accountId: number,
     status: number | undefined,
     headers: Record<string, unknown>,
+    api: KiroModelApi | undefined,
   ) {
     const requestId = ["x-amzn-requestid", "x-amzn-request-id", "x-amz-request-id", "x-request-id", "request-id"]
       .map((key) => headers[key])
@@ -771,6 +855,7 @@ export class KiroAccountPool {
       id: randomUUID(),
       source: error.source,
       code: error.code,
+      upstream_api: api,
       upstream_status: status,
       upstream_request_id: requestId,
       message_type: error.upstream?.messageType,

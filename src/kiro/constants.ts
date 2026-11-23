@@ -49,3 +49,11 @@ export function getKiroRuntimeBaseUrl(
 ): string {
   return `https://${getKiroRuntimeHost(configOrRegion)}`;
 }
+
+// The runtime's kiro.dev host. Kiro's newer endpoints (featureConfiguration,
+// CreateResponse at /v1/responses) are served only here, not on q.*.amazonaws.com.
+export function getKiroServiceBaseUrl(
+  configOrRegion?: KiroRuntimeRegionConfig | string | null,
+): string {
+  return `https://runtime.${getKiroRuntimeRegion(configOrRegion)}.kiro.dev`;
+}

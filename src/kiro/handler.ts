@@ -12,6 +12,11 @@ import {
   type ContentBlock,
 } from "./types.ts";
 import { EventStreamDecoder, parseEventPayload } from "./parser.ts";
+import {
+  CreateResponseDecoder,
+  type KiroIdeIdentity,
+  type KiroModelApi,
+} from "./create-response.ts";
 import { convertRequest, overrideThinkingFromModelName } from "./converter.ts";
 import {
   calculateTotalContextTokens,
@@ -49,6 +54,8 @@ const KIRO_INPUT_TOO_LONG_PATTERNS = [
   /\bprompt is too long\b/i,
   /\binput is too long\b/i,
   /\binput too long\b/i,
+  // CreateResponse's error code for the same condition.
+  /\bcontext_length_exceeded\b/,
 ] as const;
 const KIRO_IMPROPERLY_FORMED_REQUEST_PATTERNS = [
   /\bimproperly formed request\b/i,
@@ -113,6 +120,56 @@ function getKiroFailureError(event: KiroFailureEvent): KiroUpstreamError {
     event.type,
     event.upstream,
   );
+}
+
+// Turns response bytes into KiroEvents for either chat API.
+interface KiroEventDecoder {
+  feed(chunk: Buffer): KiroEvent[];
+  finish(): KiroEvent[];
+}
+
+class EventStreamEventDecoder implements KiroEventDecoder {
+  private readonly decoder = new EventStreamDecoder();
+
+  feed(chunk: Buffer): KiroEvent[] {
+    this.decoder.feed(chunk);
+    const events: KiroEvent[] = [];
+    while (true) {
+      const frame = this.decoder.decode();
+      if (!frame) {
+        const stats = this.decoder.getStats();
+        if (stats.state === "stopped") {
+          throw new Error(
+            `Kiro event stream decoder stopped after ${stats.errorCount} parse errors`,
+          );
+        }
+        return events;
+      }
+      const event = parseEventPayload(frame.payload, frame.headers);
+      if (event) events.push(event);
+    }
+  }
+
+  finish(): KiroEvent[] {
+    const stats = this.decoder.getStats();
+    if (stats.state === "stopped") {
+      throw new Error(
+        `Kiro event stream decoder stopped after ${stats.errorCount} parse errors`,
+      );
+    }
+    if (stats.bufferLength > 0) {
+      throw new Error(
+        `Kiro event stream ended with ${stats.bufferLength} undecoded trailing bytes`,
+      );
+    }
+    return [];
+  }
+}
+
+function createEventDecoder(api: KiroModelApi): KiroEventDecoder {
+  return api === "createResponse"
+    ? new CreateResponseDecoder()
+    : new EventStreamEventDecoder();
 }
 
 // Longest the client goes without an SSE event while Kiro is still sending
@@ -219,6 +276,30 @@ function isExternalIdpConfig(
   return isExternalIdpAccount(extraConfig || {});
 }
 
+/** The kind of token Kiro is told it receives, when it isn't an OAuth one. */
+export function kiroTokenType(
+  extraConfig?: ProviderExtraConfig | null,
+): "API_KEY" | "EXTERNAL_IDP" | undefined {
+  const authMethod = extraConfig?.authMethod?.trim().toLowerCase();
+  if (authMethod === "api_key" || authMethod === "apikey") return "API_KEY";
+  if (isExternalIdpConfig(extraConfig)) return "EXTERNAL_IDP";
+  return undefined;
+}
+
+/** How the adapter names itself as the Kiro IDE on the IDE's own clients. */
+export function kiroIdeIdentity(
+  extraConfig?: ProviderExtraConfig | null,
+): KiroIdeIdentity {
+  const { osName, nodeVersion } = getSystemRuntimeInfo();
+  return {
+    kiroVersion: effectiveKiroVersion(),
+    machineId: generateMachineId(extraConfig || null),
+    osName,
+    osRelease: os.release(),
+    nodeVersion,
+  };
+}
+
 /**
  * Build request headers (shared between streaming API and getUsageLimits)
  * Supports different API modes via apiName parameter
@@ -251,11 +332,11 @@ export function buildHeaders(
   headers["user-agent"] =
     `aws-sdk-js/${sdkVersion} ua/2.1 os/${osName} lang/js md/nodejs#${nodeVersion} api/${api}#${sdkVersion} ${metrics} KiroIDE-${kiroVersion}-${machineId}`;
 
-  const authMethod = extraConfig?.authMethod?.trim().toLowerCase();
-  if (authMethod === "api_key" || authMethod === "apikey") {
-    headers.tokentype = "API_KEY";
-  } else if (isExternalIdpConfig(extraConfig)) {
-    headers.TokenType = "EXTERNAL_IDP";
+  const tokenType = kiroTokenType(extraConfig);
+  if (tokenType === "API_KEY") {
+    headers.tokentype = tokenType;
+  } else if (tokenType) {
+    headers.TokenType = tokenType;
   }
 
   if (apiName === "usageLimits") {
@@ -422,25 +503,31 @@ export default class KiroApiProviderHandler {
   private decodeEvents(
     responseBody: Buffer | string,
     requestBody: MessagesRequest,
+    api: KiroModelApi,
   ): KiroEvent[] {
     const toolNames = createToolNameMap(requestBody);
-    const decoder = new EventStreamDecoder();
+    const body = Buffer.isBuffer(responseBody)
+      ? responseBody
+      : Buffer.from(responseBody, "utf-8");
+    const parsed: KiroEvent[] = [];
 
-    if (Buffer.isBuffer(responseBody)) {
-      decoder.feed(responseBody);
+    if (api === "createResponse") {
+      const decoder = new CreateResponseDecoder();
+      parsed.push(...decoder.feed(body), ...decoder.finish());
     } else {
-      decoder.feed(Buffer.from(responseBody, "utf-8"));
+      const decoder = new EventStreamDecoder();
+      decoder.feed(body);
+      for (const frame of decoder.decodeAll()) {
+        const event = parseEventPayload(frame.payload, frame.headers);
+        if (event) parsed.push(event);
+      }
     }
 
-    const frames = decoder.decodeAll();
     const events: KiroEvent[] = [];
-
-    for (const frame of frames) {
-      const parsed = parseEventPayload(frame.payload, frame.headers);
-      const event = parsed && toolNames.restore(parsed);
-      if (event) events.push(event);
+    for (const event of parsed) {
+      const restored = toolNames.restore(event);
+      if (restored) events.push(restored);
     }
-
     return events;
   }
 
@@ -456,6 +543,8 @@ export default class KiroApiProviderHandler {
     let stopReason = "end_turn";
     let contextTotalTokens: number | null = null;
     let creditConsumption: number | null = null;
+    // CreateResponse says the reply finished even if it reports no credits.
+    let responseEnded = false;
 
     const toolJsonBuffers = new Map<string, string>();
 
@@ -509,6 +598,11 @@ export default class KiroApiProviderHandler {
           creditConsumption = event.data.amount;
           break;
 
+        case "responseEnd":
+          responseEnded = true;
+          if (event.stopReason) stopReason = event.stopReason;
+          break;
+
         case "exception":
         case "error":
         case "refusal":
@@ -516,7 +610,7 @@ export default class KiroApiProviderHandler {
       }
     }
 
-    if (creditConsumption === null) {
+    if (creditConsumption === null && !responseEnded) {
       throw new KiroTruncatedError(textContent.length, toolJsonBuffers.size);
     }
 
@@ -777,9 +871,10 @@ export default class KiroApiProviderHandler {
     requestBody: MessagesRequest,
     modifiedRequestBody: KiroRequest,
     sink: KiroStreamSink,
+    api: KiroModelApi = "generateAssistantResponse",
   ): Promise<KiroStreamResult> {
     const toolNames = createToolNameMap(requestBody);
-    const decoder = new EventStreamDecoder();
+    const decoder = createEventDecoder(api);
     const estimatedInputTokens = estimateInputTokens(
       requestBody.system,
       requestBody.messages,
@@ -799,57 +894,37 @@ export default class KiroApiProviderHandler {
       await emitSseEvent(event);
     }
 
+    const handleEvent = async (parsed: KiroEvent): Promise<void> => {
+      const event = toolNames.restore(parsed);
+      if (isKiroFailureEvent(event)) {
+        throw getKiroFailureError(event);
+      }
+
+      events.push(event);
+
+      const sseEvents = ctx.processKiroEvent(
+        event,
+        modifiedRequestBody.conversationState.currentMessage.userInputMessage
+          .modelId,
+      );
+      for (const sseEvent of sseEvents) {
+        await emitSseEvent(sseEvent);
+      }
+      // Kiro is sending something the client doesn't see (e.g. reasoning
+      // with display "omitted"). Say so with a ping. Pings only follow
+      // real Kiro frames: if Kiro goes quiet, so does the client.
+      if (!sseEvents.length && Date.now() - lastWriteAt >= PING_AFTER_MS) {
+        await emitSseEvent({ event: "ping", data: { type: "ping" } });
+      }
+    };
+
     for await (const chunk of responseStream) {
-      decoder.feed(Buffer.from(chunk));
-
-      while (true) {
-        const frame = decoder.decode();
-        if (!frame) {
-          const stats = decoder.getStats();
-          if (stats.state === "stopped") {
-            throw new Error(
-              `Kiro event stream decoder stopped after ${stats.errorCount} parse errors`,
-            );
-          }
-          break;
-        }
-
-        const parsed = parseEventPayload(frame.payload, frame.headers);
-        const event = parsed && toolNames.restore(parsed);
-        if (!event) continue;
-        if (isKiroFailureEvent(event)) {
-          throw getKiroFailureError(event);
-        }
-
-        events.push(event);
-
-        const sseEvents = ctx.processKiroEvent(
-          event,
-          modifiedRequestBody.conversationState.currentMessage.userInputMessage
-            .modelId,
-        );
-        for (const sseEvent of sseEvents) {
-          await emitSseEvent(sseEvent);
-        }
-        // Kiro is sending something the client doesn't see (e.g. reasoning
-        // with display "omitted"). Say so with a ping. Pings only follow
-        // real Kiro frames: if Kiro goes quiet, so does the client.
-        if (!sseEvents.length && Date.now() - lastWriteAt >= PING_AFTER_MS) {
-          await emitSseEvent({ event: "ping", data: { type: "ping" } });
-        }
+      for (const event of decoder.feed(Buffer.from(chunk))) {
+        await handleEvent(event);
       }
     }
-
-    const finalDecoderStats = decoder.getStats();
-    if (finalDecoderStats.state === "stopped") {
-      throw new Error(
-        `Kiro event stream decoder stopped after ${finalDecoderStats.errorCount} parse errors`,
-      );
-    }
-    if (finalDecoderStats.bufferLength > 0) {
-      throw new Error(
-        `Kiro event stream ended with ${finalDecoderStats.bufferLength} undecoded trailing bytes`,
-      );
+    for (const event of decoder.finish()) {
+      await handleEvent(event);
     }
 
     const analysis = await this.analyzeEvents(
@@ -885,6 +960,7 @@ export default class KiroApiProviderHandler {
     responseBody: Buffer | string,
     requestBody: MessagesRequest,
     modifiedRequestBody: KiroRequest,
+    api: KiroModelApi = "generateAssistantResponse",
   ): Promise<{ body: unknown; headers?: Record<string, string> }> {
     if (statusCode != 200) {
       // Preserve the original provider body for the pool's error diagnostics.
@@ -903,7 +979,7 @@ export default class KiroApiProviderHandler {
       return { body: parsedBody };
     }
 
-    const events = this.decodeEvents(responseBody, requestBody);
+    const events = this.decodeEvents(responseBody, requestBody, api);
     const analysis = await this.analyzeEvents(
       events,
       requestBody,

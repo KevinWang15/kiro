@@ -61,6 +61,7 @@ export interface KiroErrorDiagnostics {
   id: string;
   source: KiroUpstreamError["source"];
   code: string;
+  upstream_api?: string;
   upstream_status?: number;
   upstream_request_id?: string;
   message_type?: string;
@@ -77,6 +78,7 @@ export function kiroErrorResponse(error: KiroUpstreamError, diagnostics: KiroErr
   const labels = [
     `source=${diagnostics.event_type ?? diagnostics.message_type ?? error.source}`,
     `code=${error.code}`,
+    ...(diagnostics.upstream_api ? [`api=${diagnostics.upstream_api}`] : []),
     ...(diagnostics.upstream_status !== undefined ? [`upstream_http=${diagnostics.upstream_status}`] : []),
     ...(diagnostics.upstream_request_id ? [`request_id=${diagnostics.upstream_request_id}`] : []),
     `diagnostic_id=${diagnostics.id}`,

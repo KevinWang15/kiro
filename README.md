@@ -33,6 +33,15 @@ Available endpoints:
 - `POST /v1/messages` — Anthropic JSON and streaming SSE
 - `POST /v1/messages/count_tokens` — local token estimation
 
+Kiro assigns accounts to one of two chat APIs through its `create_response_api`
+experiment, and may answer an account in the CreateResponse group with 429
+`USER_REQUEST_RATE_EXCEEDED` on the older `generateAssistantResponse`. Like the
+Kiro IDE, the adapter reads each account's feature configuration (cached for 15
+minutes) and sends that account's requests to `POST /v1/responses` on
+`runtime.<region>.kiro.dev`. Other accounts, and accounts whose configuration
+can't be read, use `generateAssistantResponse`. The API used appears as `api` in
+`[route]` logs and as `api=` in error messages.
+
 Signed thinking and redacted reasoning are replayed through Kiro's native
 `reasoningContent` field. When thinking display is `omitted`, the adapter saves
 the original text locally in SQLite and restores it by signature on later

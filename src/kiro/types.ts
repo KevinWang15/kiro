@@ -217,6 +217,9 @@ export type KiroEvent =
   | { type: "reasoning"; text: string; signature?: string; redactedContent?: string }
   | { type: "contextUsage"; data: { percentage: number } }
   | { type: "creditConsumption"; data: { amount: number } }
+  // CreateResponse's response.completed: the reply finished. stopReason is
+  // set only when it differs from the default (end_turn or tool_use).
+  | { type: "responseEnd"; stopReason?: string }
   | { type: "refusal"; stopReason: string; message: string; upstream?: KiroFailureDetails }
   | { type: "error"; errorCode: string; errorMessage: string; upstream?: KiroFailureDetails }
   | { type: "exception"; exceptionType: string; message: string; upstream?: KiroFailureDetails };

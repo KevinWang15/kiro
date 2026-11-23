@@ -346,6 +346,9 @@ export class StreamContext {
           this.stateManager.setStopReason("model_context_window_exceeded");
         }
         return [];
+      case "responseEnd":
+        if (event.stopReason) this.stateManager.setStopReason(event.stopReason);
+        return [];
       case "exception":
         return [];
       case "error":

@@ -20,6 +20,11 @@ async function harness(t: test.TestContext, body: Buffer | string | object, stat
   const upstream = http.createServer((req, res) => {
     req.resume();
     req.on("end", () => {
+      if (req.url?.startsWith("/featureConfiguration")) {
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify({ configuration: {} }));
+        return;
+      }
       calls++;
       res.writeHead(status, {
         "content-type": status === 200 ? "application/vnd.amazon.eventstream" : "application/json",

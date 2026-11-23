@@ -134,6 +134,8 @@ for (const [label, credentials, expected] of usageCases) {
 test("pooled inference and web search apply profiles without changing stored credentials", async (t) => {
   const requests: InternalAxiosRequestConfig[] = [];
   useAdapter(t, async (config) => {
+    if (config.url?.includes("/featureConfiguration"))
+      return { config, data: { configuration: {} }, status: 200, statusText: "OK", headers: {} };
     requests.push(config);
     return {
       config,
