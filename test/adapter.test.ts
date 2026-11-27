@@ -102,8 +102,6 @@ test("model names are translated, never swapped for another model", () => {
   // No downgrade: Opus stays Opus, Haiku 5.5 stays Haiku 5.5, Fable passes through.
   assert.equal(mapModel("claude-haiku-5-5"), "claude-haiku-5.5");
   assert.equal(mapModel("claude-fable-5-1"), "claude-fable-5.1");
-  // Explicit experimental models and the "!" escape hatch.
-  assert.equal(mapModel("claude-opus-4-8-20260529", ["claude-opus-4.8"]), "claude-opus-4.8");
   assert.equal(mapModel("!claude-opus-4.7"), "!claude-opus-4.7");
 });
 

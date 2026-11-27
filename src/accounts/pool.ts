@@ -24,7 +24,7 @@ import {
   getKiroRuntimeBaseUrl,
   getKiroServiceBaseUrl,
 } from "../kiro/constants.ts";
-import { extractSessionId, supportsKiroExperimentalModel } from "../kiro/utils.ts";
+import { extractSessionId } from "../kiro/utils.ts";
 import { hasWebSearchTool, handleWebSearchRequest } from "../kiro/websearch.ts";
 import { rewriteAgentLabelRequest } from "../kiro/agent-label.ts";
 import type { KiroRequest, MessagesRequest } from "../kiro/types.ts";
@@ -126,31 +126,14 @@ export function isQuotaExhausted(
   }
 }
 
-function shuffleArray<T>(items: T[]): T[] {
-  const shuffled = [...items];
+function orderAccountsForRequest(accounts: AccountRecord[]): AccountRecord[] {
+  // Shuffle first so accounts with equal priority are tried in random order.
+  const shuffled = [...accounts];
   for (let index = shuffled.length - 1; index > 0; index -= 1) {
     const other = Math.floor(Math.random() * (index + 1));
     [shuffled[index], shuffled[other]] = [shuffled[other], shuffled[index]];
   }
-  return shuffled;
-}
-
-// Lower priority numbers are used first (as the UI says); accounts with the
-// same priority are tried in random order. An account that explicitly lists
-// the requested experimental model goes first within its priority. Nothing
-// here changes which model is requested.
-export function orderAccountsForRequest(
-  accounts: AccountRecord[],
-  requestModel: string,
-): AccountRecord[] {
-  const supports = (account: AccountRecord) =>
-    supportsKiroExperimentalModel(
-      requestModel,
-      parseCredentials(account).supportedExperimentalModels,
-    );
-  return shuffleArray(accounts).sort(
-    (a, b) => a.priority - b.priority || Number(supports(b)) - Number(supports(a)),
-  );
+  return shuffled.sort((a, b) => a.priority - b.priority);
 }
 
 function stableUuidFromString(value: string): string {
@@ -346,7 +329,7 @@ export class KiroAccountPool {
       };
     }
 
-    const ordered = orderAccountsForRequest(allAccounts, request.model);
+    const ordered = orderAccountsForRequest(allAccounts);
     // Keyed on the session only, so one session stays on one account across
     // models (e.g. its Opus and Haiku requests).
     const userId = String(request.metadata?.user_id ?? "");

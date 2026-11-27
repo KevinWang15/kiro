@@ -486,7 +486,6 @@ export default class KiroApiProviderHandler {
     overrideThinkingFromModelName(originalBody);
 
     const result = convertRequest(originalBody, {
-      supportedExperimentalModels: extraConfig?.supportedExperimentalModels,
       resolveReasoning: (signature) => this.reasoningReplay.get(signature),
     });
 

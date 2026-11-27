@@ -24,7 +24,6 @@ export interface ProviderExtraConfig {
   machineId?: string;
   email?: string;
   userId?: string;
-  supportedExperimentalModels?: string[];
   deleteAnthropicBetaHeader?: boolean;
   rateLimit?: { requestsPerMinute: number };
   [key: string]: unknown;

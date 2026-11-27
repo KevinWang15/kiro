@@ -732,7 +732,6 @@ function generateThinkingPrefix(req: MessagesRequest): string | null {
 export function convertRequest(
   req: MessagesRequest,
   options?: {
-    supportedExperimentalModels?: readonly string[] | null;
     resolveReasoning?: (signature: string) => string | undefined;
   },
 ): KiroRequest {
@@ -750,10 +749,7 @@ export function convertRequest(
     })),
   };
   // 1. Map model
-  const mappedModelId = mapModel(
-    req.model,
-    options?.supportedExperimentalModels,
-  );
+  const mappedModelId = mapModel(req.model);
   if (!mappedModelId) {
     throw new ConversionError(
       "unsupported_model",

@@ -361,59 +361,6 @@ export function removeOrphanedToolUses(
 // Model Mapping
 // ============================================================================
 
-function normalizeExperimentalModelName(model: string): string {
-  return model.trim().toLowerCase();
-}
-
-function toDottedClaudeVersionAlias(model: string): string | null {
-  // Only used as an extra supportedExperimentalModels lookup key.
-  const trimmed = model.trim();
-  const match = /^(claude-.+)-(\d{1,2})-(\d{1,2})(?:-[^-]+)?$/i.exec(trimmed);
-  return match ? `${match[1]}-${match[2]}.${match[3]}` : null;
-}
-
-export function getSupportedKiroExperimentalModelId(
-  model: string,
-  supportedExperimentalModels?: readonly string[] | null,
-): string | null {
-  if (
-    !Array.isArray(supportedExperimentalModels) ||
-    supportedExperimentalModels.length === 0
-  ) {
-    return null;
-  }
-
-  const candidates = [model];
-  const dottedAlias = toDottedClaudeVersionAlias(model);
-  if (dottedAlias) {
-    candidates.push(dottedAlias);
-  }
-
-  for (const candidate of candidates) {
-    const normalizedCandidate = normalizeExperimentalModelName(candidate);
-    const supported = supportedExperimentalModels.some(
-      (supportedModel) =>
-        typeof supportedModel === "string" &&
-        normalizeExperimentalModelName(supportedModel) === normalizedCandidate,
-    );
-    if (supported) {
-      return candidate;
-    }
-  }
-
-  return null;
-}
-
-export function supportsKiroExperimentalModel(
-  model: string,
-  supportedExperimentalModels?: readonly string[] | null,
-): boolean {
-  return (
-    getSupportedKiroExperimentalModelId(model, supportedExperimentalModels) !==
-    null
-  );
-}
-
 /**
  * Translate an Anthropic model name to the Kiro model ID for the same model.
  *
@@ -425,22 +372,10 @@ export function supportsKiroExperimentalModel(
  *   claude-opus-5-5           -> claude-opus-5.5
  *   !<id>                     -> <id> sent as-is (escape hatch)
  */
-export function mapModel(
-  model: string,
-  supportedExperimentalModels?: readonly string[] | null,
-): string | null {
+export function mapModel(model: string): string | null {
   if (typeof model !== "string" || !model.trim()) return null;
   if (model.startsWith("!")) return model;
-  const supported = getSupportedKiroExperimentalModelId(
-    model,
-    supportedExperimentalModels,
-  );
-  if (supported) return supported;
-  return toKiroModelId(model);
-}
 
-/** "claude-<family>-<major>-<minor>[-<date>]" -> "claude-<family>-<major>.<minor>". */
-export function toKiroModelId(model: string): string {
   const trimmed = model.trim().toLowerCase();
   const match = /^(claude-[a-z]+)-(\d{1,2})[-.](\d{1,2})(?:-\d{8})?$/.exec(trimmed);
   if (match) return `${match[1]}-${match[2]}.${match[3]}`;
