@@ -144,6 +144,30 @@ test("token windows, CJK estimates and Claude pricing match expected formulas", 
   assert.equal(cost.total_cost_usd, 22.05);
 });
 
+test("each Fable version uses its own pricing", () => {
+  const usage = {
+    input_tokens: 1_000_000,
+    output_tokens: 1_000_000,
+    cache_read_input_tokens: 1_000_000,
+    cache_creation_input_tokens: 1_000_000,
+  };
+  const cases: Array<[string[], [number, number, number, number]]> = [
+    [["claude-fable-5-2", "claude-fable-5.2"], [8, 40, 0.2, 10]],
+    [["claude-fable-5-1", "claude-fable-5.1"], [10, 50, 0.25, 12.5]],
+    [["claude-fable-5"], [10, 50, 1, 12.5]],
+  ];
+  for (const [models, [input, output, read, write]] of cases) {
+    for (const model of models) {
+      const cost = calculateClaudeCost(model, usage);
+      assert.deepEqual(
+        [cost.input_cost_usd, cost.output_cost_usd, cost.cache_read_cost_usd, cost.cache_creation_cost_usd],
+        [input, output, read, write],
+        model,
+      );
+    }
+  }
+});
+
 test("Opus 5.5 aliases use identical input, output and cache pricing", () => {
   const usage = {
     input_tokens: 1_000_000,

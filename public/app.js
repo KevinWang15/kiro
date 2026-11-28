@@ -1489,7 +1489,7 @@ function detailCard(title, rows) {
 
 function modelBadge(model) {
   const name = String(model || "");
-  const family = ["opus", "sonnet", "haiku"].find((value) =>
+  const family = ["fable", "opus", "sonnet", "haiku"].find((value) =>
     name.toLowerCase().includes(value),
   );
   return `<span class="badge model-badge ${family ? `model-${family}` : ""}">${escapeHtml(name)}</span>`;

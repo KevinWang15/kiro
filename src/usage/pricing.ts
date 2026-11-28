@@ -12,6 +12,16 @@ export interface ModelPricing {
 // More-specific patterns must come before broader ones (first match wins).
 // Source: https://docs.anthropic.com/en/docs/about-claude/pricing
 export const CLAUDE_PRICING: [pattern: string, pricing: ModelPricing][] = [
+  // Fable 5.2 ($8/$40); cache read = 2.5% of input.
+  [
+    "fable-5-2",
+    { input: 8.0, output: 40.0, cache_read: 0.2, cache_creation: 10.0 },
+  ],
+  // Fable 5.1 ($10/$50); cache read = 2.5% of input.
+  [
+    "fable-5-1",
+    { input: 10.0, output: 50.0, cache_read: 0.25, cache_creation: 12.5 },
+  ],
   // Fable 5 ($10/$50), twice Opus 4.5+.
   [
     "fable",

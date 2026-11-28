@@ -867,6 +867,11 @@ tbody tr:hover {
   background: var(--amber-soft);
   border-color: #f5b54433;
 }
+.model-badge.model-fable {
+  color: var(--red);
+  background: var(--red-soft);
+  border-color: #f8717133;
+}
 .model-badge.model-haiku {
   color: var(--green);
   background: var(--green-soft);
