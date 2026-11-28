@@ -149,7 +149,7 @@ function upstreamError(prefix: string, response: { status: number; data: any }):
 }
 
 /** Find the CodeWhisperer profile for IdC tokens; its ARN fixes the runtime region. */
-async function resolveProfile(accessToken: string, refreshToken: string, authRegion: string, proxy: ProxyRecord | null) {
+export async function resolveProfile(accessToken: string, refreshToken: string, authRegion: string, proxy: ProxyRecord | null) {
   const fallback = authRegion.startsWith("eu-") ? "eu-central-1" : "us-east-1";
   const machineId = crypto.createHash("sha256").update(`KotlinNativeAPI/${refreshToken}`).digest("hex");
   const suffix = `KiroIDE-${USAGE_API_KIRO_VERSION}-${machineId}`;

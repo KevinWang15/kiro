@@ -6,6 +6,7 @@ import type { AccountRepository } from "./repository.ts";
 import type { ProxyRepository } from "./proxies.ts";
 import type { AccountRecord, KiroCredentials, ProxyRecord } from "./types.ts";
 import { parseCredentials } from "./types.ts";
+import { resolveProfile } from "./login-flows.ts";
 import {
   firstNonEmptyString,
   inferMicrosoftScopes,
@@ -321,6 +322,23 @@ export class TokenManager {
     if (!refreshed?.accessToken)
       throw new Error("Kiro access-token exchange failed");
     const merged = { ...normalized, ...refreshed };
+    // Identity Center sign-in looks up the account's profile; imported
+    // Enterprise credentials often lack it, and without it Kiro answers 403.
+    if (
+      merged.provider?.trim().toLowerCase() === "enterprise" &&
+      !merged.profileArn?.trim()
+    ) {
+      const profile = await resolveProfile(
+        merged.accessToken!,
+        merged.refreshToken || "",
+        merged.region || "us-east-1",
+        proxy,
+      );
+      if (profile.profileArn) {
+        merged.profileArn = profile.profileArn;
+        merged.runtimeRegion = profile.runtimeRegion;
+      }
+    }
     return {
       ...merged,
       region: merged.region || "us-east-1",

@@ -353,6 +353,24 @@ test("refresh failures report the upstream reason", async (t) => {
   await assert.rejects(() => context.tokens.refreshAccount(account.id), /invalid_grant.*Invalid refresh token provided.*sign in again/);
 });
 
+test("bulk-imported Enterprise accounts get their CodeWhisperer profile", async (t) => {
+  const { api, context, calls } = await createHarness(t);
+  const imported = await api("/api/accounts/import", {
+    method: "POST",
+    body: JSON.stringify({ text: JSON.stringify([
+      { refreshToken: "enterprise-refresh", clientId: "c", clientSecret: "s", provider: "Enterprise", region: "us-east-1" },
+      { refreshToken: "builder-refresh-2", clientId: "c", clientSecret: "s", provider: "BuilderId", authMethod: "IdC", region: "us-east-1" },
+    ]) }),
+  });
+  assert.equal(imported.status, 200);
+  assert.equal(imported.body.created, 2);
+  const [enterprise, builder] = imported.body.accountIds.map((id: number) => JSON.parse(context.accounts.get(id)!.credentials));
+  assert.equal(enterprise.profileArn, "arn:aws:codewhisperer:eu-central-1:123456789012:profile/ABC");
+  assert.equal(enterprise.runtimeRegion, "eu-central-1");
+  assert.ok(!builder.profileArn, "Builder ID keeps the placeholder profile");
+  assert.equal(calls.filter((c) => c.path === "/codewhisperer/ListAvailableProfiles").length, 1);
+});
+
 test("bulk import preview summarizes each entry without exposing tokens", async (t) => {
   const { api } = await createHarness(t);
   await api("/api/accounts/create", { method: "POST", body: JSON.stringify({ credentials: { accessToken: "ksk_existing_key", authMethod: "api_key" } }) });
