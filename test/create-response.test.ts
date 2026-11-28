@@ -16,7 +16,7 @@ import {
   toCreateResponseRequest,
 } from "../src/kiro/create-response.ts";
 import type { KiroEvent, KiroRequest } from "../src/kiro/types.ts";
-import { successfulKiroStream } from "./helpers.ts";
+import { kiroModelList, successfulKiroStream } from "./helpers.ts";
 
 const sse = (...events: unknown[]) =>
   events.map((event) => `event: x\ndata: ${JSON.stringify(event)}\n\n`).join("") + "data: [DONE]\n\n";
@@ -262,7 +262,13 @@ async function listen(server: http.Server): Promise<string> {
   return `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
 }
 
-async function harness(t: test.TestContext, arm: string | undefined, responses: string) {
+async function harness(
+  t: test.TestContext,
+  arm: string | undefined,
+  responses: string,
+  // What ListAvailableModels answers; null for an HTTP 500.
+  models: unknown = { models: [] },
+) {
   const requests: Array<{ method: string; url: string; headers: http.IncomingHttpHeaders; body: any }> = [];
   const upstream = http.createServer((req, res) => {
     let body = "";
@@ -272,6 +278,9 @@ async function harness(t: test.TestContext, arm: string | undefined, responses: 
       if (req.method === "GET" && req.url?.startsWith("/featureConfiguration")) {
         res.writeHead(200, { "content-type": "application/json" });
         res.end(JSON.stringify({ configuration: arm ? { [CREATE_RESPONSE_FEATURE_KEY]: arm } : {} }));
+      } else if (req.method === "GET" && req.url?.startsWith("/ListAvailableModels")) {
+        res.writeHead(models === null ? 500 : 200, { "content-type": "application/json" });
+        res.end(JSON.stringify(models ?? { message: "unavailable" }));
       } else if (req.method === "POST" && req.url === "/v1/responses") {
         res.writeHead(200, { "content-type": "text/event-stream", "x-amzn-requestid": "CR-REQUEST" });
         res.end(responses);
@@ -380,4 +389,65 @@ test("a CreateResponse stream that ends without response.completed is reported a
   });
   assert.equal(response.status, 502);
   assert.match((await response.json()).error.message, /closed the stream before finishing/);
+});
+
+const maxEffort = (stream = false) => ({
+  model: "claude-fable-5-2",
+  stream,
+  thinking: { type: "adaptive" },
+  output_config: { effort: "max" },
+  messages: [{ role: "user", content: "Think it through." }],
+});
+const post = (baseUrl: string, body: unknown) =>
+  fetch(`${baseUrl}/v1/messages`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+const TAG = "<thinking_mode>adaptive</thinking_mode><thinking_effort>max</thinking_effort>";
+
+test("the effort reaches CreateResponse as a reasoning field", async (t) => {
+  const env = await harness(t, "create_response", sse({ type: "response.output_text.delta", delta: "Done." }, completed()), kiroModelList);
+  const logs: string[] = [];
+  t.mock.method(console, "log", (line: string) => logs.push(line));
+  assert.equal((await post(env.baseUrl, maxEffort())).status, 200);
+  assert.equal((await post(env.baseUrl, { ...maxEffort(), output_config: { effort: "low" } })).status, 200);
+
+  const chats = env.requests.filter((r) => r.url === "/v1/responses");
+  assert.deepEqual(chats.map((r) => r.body.reasoning), [
+    { type: "adaptive", effort: "max" },
+    { type: "adaptive", effort: "low" },
+  ]);
+  assert.deepEqual(chats[0].body.input, [{ role: "user", content: "Think it through." }]);
+
+  // One read of the account's model list serves both requests.
+  const lists = env.requests.filter((r) => r.url.startsWith("/ListAvailableModels"));
+  assert.equal(lists.length, 1);
+  assert.match(lists[0].url, /origin=AI_EDITOR/);
+  assert.equal(lists[0].headers.authorization, "Bearer access-1");
+
+  const results = logs.filter((line) => line.startsWith("[route]") && line.includes('"event":"result"'));
+  assert.deepEqual(results.map((line) => JSON.parse(line.slice("[route] ".length)).effort), ["max", "low"]);
+});
+
+test("the effort reaches generateAssistantResponse as additionalModelRequestFields", async (t) => {
+  const env = await harness(t, undefined, "", kiroModelList);
+  assert.equal((await post(env.baseUrl, maxEffort())).status, 200);
+  const [chat] = env.requests.filter((r) => r.url === "/generateAssistantResponse");
+  assert.deepEqual(chat.body.additionalModelRequestFields, {
+    thinking: { type: "adaptive" },
+    output_config: { effort: "max" },
+  });
+  assert.equal(chat.body.conversationState.currentMessage.userInputMessage.content, "Think it through.");
+});
+
+test("without a readable model list the request goes out as before", async (t) => {
+  const env = await harness(t, "create_response", sse({ type: "response.output_text.delta", delta: "Done." }, completed()), null);
+  const warnings: string[] = [];
+  t.mock.method(console, "warn", (line: string) => warnings.push(line));
+  assert.equal((await post(env.baseUrl, maxEffort())).status, 200);
+  const [chat] = env.requests.filter((r) => r.url === "/v1/responses");
+  assert.equal(Object.hasOwn(chat.body, "reasoning"), false);
+  assert.deepEqual(chat.body.input, [{ role: "user", content: `${TAG}\n\nThink it through.` }]);
+  assert.deepEqual(warnings, ["[kiro] model list for account 1 unavailable: ListAvailableModels returned HTTP 500"]);
 });

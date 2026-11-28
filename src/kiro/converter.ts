@@ -26,9 +26,11 @@ import {
   type AssistantResponseMessage,
   type UserInputMessage,
   type UserInputMessageContext,
+  type ModelRequestFields,
   MAX_BUDGET_TOKENS,
   DEFAULT_EFFORT,
 } from "./types.ts";
+import { fieldEffort, modelRequestFields, type ModelControls } from "./model-fields.ts";
 import {
   mapModel,
   getThinkingType,
@@ -685,14 +687,17 @@ function capBudgetTokens(budget: number): number {
 /**
  * Generate thinking prefix for system message
  */
-/** System prompt text, with thinking tags in front when thinking is on. */
-function systemPreamble(req: MessagesRequest): string {
+/**
+ * System prompt text, with thinking tags in front when thinking is on and the
+ * request's fields don't already say all of it.
+ */
+function systemPreamble(req: MessagesRequest, fields: ModelRequestFields | undefined): string {
   const system = Array.isArray(req.system)
     ? req.system.map((block) => block.text).join("\n")
     : typeof req.system === "string"
       ? req.system
       : "";
-  const thinkingPrefix = generateThinkingPrefix(req);
+  const thinkingPrefix = generateThinkingPrefix(req, fields);
   const withThinking =
     thinkingPrefix && !system.includes("<thinking_mode>")
       ? joinText(thinkingPrefix, system)
@@ -704,7 +709,10 @@ function joinText(first: string, second: string): string {
   return second ? `${first}\n\n${second}` : first;
 }
 
-function generateThinkingPrefix(req: MessagesRequest): string | null {
+function generateThinkingPrefix(
+  req: MessagesRequest,
+  fields: ModelRequestFields | undefined,
+): string | null {
   if (!req.thinking) return null;
 
   const thinking = req.thinking;
@@ -715,6 +723,8 @@ function generateThinkingPrefix(req: MessagesRequest): string | null {
   }
 
   if (thinking.type === "adaptive") {
+    // Kiro took the mode and the effort as fields: nothing is left to say.
+    if (fields?.thinking && fieldEffort(fields)) return null;
     const effort = req.output_config?.effort || DEFAULT_EFFORT;
     return `<thinking_mode>adaptive</thinking_mode><thinking_effort>${effort}</thinking_effort>`;
   }
@@ -733,6 +743,8 @@ export function convertRequest(
   req: MessagesRequest,
   options?: {
     resolveReasoning?: (signature: string) => string | undefined;
+    // What Kiro's model list lets a request say for a model, by Kiro's id.
+    modelControls?: (modelId: string) => ModelControls | undefined;
   },
 ): KiroRequest {
   const toolNames = createToolNameMap(req);
@@ -802,7 +814,8 @@ export function convertRequest(
   // 7. Build history
   // System prompt and thinking tags go at the top of the conversation's first
   // user turn: in history if there is one, otherwise in the current message.
-  const preamble = systemPreamble(req);
+  const fields = modelRequestFields(req, options?.modelControls?.(modelId));
+  const preamble = systemPreamble(req, fields);
   let history = buildHistory(
     req.messages.slice(0, currentStart),
     modelId,
@@ -888,7 +901,10 @@ export function convertRequest(
     history: history.length > 0 ? history : undefined,
   };
 
-  const result = { conversationState };
+  const result: KiroRequest = {
+    conversationState,
+    ...(fields ? { additionalModelRequestFields: fields } : {}),
+  };
   toolNames.apply(result);
   return result;
 }

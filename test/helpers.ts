@@ -46,6 +46,61 @@ export function eventFrame(
   return message;
 }
 
+// Entries of Kiro's ListAvailableModels as an Enterprise account got them on
+// 2026-11-28, cut down to what the adapter reads.
+const effortSchema = (thinkingTypes: string[], levels: string[]) => ({
+  type: "object",
+  properties: {
+    thinking: {
+      type: "object",
+      properties: {
+        type: { type: "string", enum: thinkingTypes },
+        display: { type: "string", enum: ["summarized", "omitted"] },
+      },
+      required: ["type"],
+    },
+    output_config: {
+      type: "object",
+      properties: { effort: { type: "string", enum: levels, default: "high" } },
+    },
+    max_tokens: { type: "integer", minimum: 1024, maximum: 64000 },
+  },
+  additionalProperties: false,
+});
+export const kiroModelList = {
+  defaultModel: { modelId: "auto" },
+  models: [
+    { modelId: "auto", modelName: "Auto" },
+    {
+      modelId: "claude-fable-5.2",
+      additionalModelRequestFieldsSchema: effortSchema(["adaptive"], ["low", "medium", "high", "xhigh", "max"]),
+    },
+    {
+      modelId: "claude-opus-5.5",
+      additionalModelRequestFieldsSchema: effortSchema(["adaptive"], ["low", "medium", "high", "xhigh", "max"]),
+    },
+    {
+      modelId: "claude-opus-4.6",
+      additionalModelRequestFieldsSchema: effortSchema(["adaptive", "disabled"], ["low", "medium", "high", "max"]),
+    },
+    { modelId: "claude-sonnet-4.5" },
+    {
+      modelId: "gpt-5.6-sol",
+      additionalModelRequestFieldsSchema: {
+        type: "object",
+        properties: {
+          reasoning: {
+            type: "object",
+            properties: { effort: { type: "string", enum: ["none", "low", "medium", "high", "xhigh", "max"] } },
+          },
+        },
+        additionalProperties: false,
+      },
+    },
+  ],
+  nextToken: null,
+};
+
 export function reasoningFrame(payload: { text?: string; signature?: string; redactedContent?: string }): Buffer {
   return eventFrame(payload, [
     { name: ":event-type", value: "reasoningContentEvent" },

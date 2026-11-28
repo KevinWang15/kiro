@@ -36,6 +36,7 @@ import {
 } from "./reasoning-replay.ts";
 import { KiroRefusalError, KiroUpstreamError } from "./errors.ts";
 import { getStreamingProfileArn } from "./profile.ts";
+import type { ModelControls } from "./model-fields.ts";
 export { KiroRefusalError, KiroUpstreamError } from "./errors.ts";
 import { calculateClaudeCost } from "../usage/pricing.ts";
 import { getKiroRuntimeHost } from "./constants.ts";
@@ -478,6 +479,7 @@ export default class KiroApiProviderHandler {
   transformRequestBody(
     originalBody: MessagesRequest,
     extraConfig: ProviderExtraConfig | null,
+    modelControls?: (modelId: string) => ModelControls | undefined,
   ): KiroRequest {
     stripBillingHeaderCch(originalBody);
     ensureClaudeModel(originalBody?.model);
@@ -487,11 +489,10 @@ export default class KiroApiProviderHandler {
 
     const result = convertRequest(originalBody, {
       resolveReasoning: (signature) => this.reasoningReplay.get(signature),
+      modelControls,
     });
 
-    const request: KiroRequest = {
-      conversationState: result.conversationState,
-    };
+    const request: KiroRequest = { ...result };
 
     const profileArn = getStreamingProfileArn(extraConfig);
     if (profileArn) request.profileArn = profileArn;

@@ -47,6 +47,11 @@ async function createHarness(t: test.TestContext) {
       );
       return;
     }
+    if (req.method === "GET" && req.url?.startsWith("/ListAvailableModels")) {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ models: [] }));
+      return;
+    }
     if (req.method === "POST" && req.url === "/generateAssistantResponse") {
       let body = "";
       req.on("data", (chunk) => (body += chunk));

@@ -136,6 +136,8 @@ test("pooled inference and web search apply profiles without changing stored cre
   useAdapter(t, async (config) => {
     if (config.url?.includes("/featureConfiguration"))
       return { config, data: { configuration: {} }, status: 200, statusText: "OK", headers: {} };
+    if (config.url?.includes("/ListAvailableModels"))
+      return { config, data: { models: [] }, status: 200, statusText: "OK", headers: {} };
     requests.push(config);
     return {
       config,

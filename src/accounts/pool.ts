@@ -1,6 +1,7 @@
 import axios from "axios";
 import { createHash, randomUUID } from "node:crypto";
 import KiroApiProviderHandler, {
+  buildHeaders,
   getKiroUnrecoverableErrorReason,
   kiroIdeIdentity,
   kiroTokenType,
@@ -17,6 +18,17 @@ import {
   toCreateResponseRequest,
   type KiroModelApi,
 } from "../kiro/create-response.ts";
+import { AccountCache } from "../kiro/account-cache.ts";
+import {
+  addModels,
+  fieldEffort,
+  MODEL_LIST_MAX_PAGES,
+  MODEL_LIST_RETRY_MS,
+  MODEL_LIST_TIMEOUT_MS,
+  MODEL_LIST_TTL_MS,
+  type ModelCatalog,
+} from "../kiro/model-fields.ts";
+import { getEffectiveProfileArn } from "../kiro/profile.ts";
 import { CacheSimulator } from "../kiro/cache-simulation.ts";
 import { SqliteCacheStore } from "../kiro/sqlite-cache.ts";
 import { SqliteReasoningReplayStore } from "../kiro/reasoning-replay.ts";
@@ -75,6 +87,8 @@ export interface PoolResult {
   credentialError?: boolean;
   accountId?: number;
   api?: KiroModelApi;
+  // The reasoning effort sent to Kiro as a request field.
+  effort?: string;
 }
 
 interface AttemptOptions {
@@ -224,6 +238,11 @@ export class KiroAccountPool {
   private readonly handler: KiroApiProviderHandler;
   private readonly rateLimiter = new AccountRateLimiter();
   private readonly modelApis = new ModelApiSelector();
+  private readonly modelLists = new AccountCache<ModelCatalog>(
+    "model list",
+    MODEL_LIST_TTL_MS,
+    MODEL_LIST_RETRY_MS,
+  );
 
   constructor(
     private readonly accounts: AccountRepository,
@@ -384,6 +403,7 @@ export class KiroAccountPool {
         status: result.statusCode,
         ok: Boolean(result.success),
         ...(result.api ? { api: result.api } : {}),
+        ...(result.effort ? { effort: result.effort } : {}),
         ms: Date.now() - requestStarted,
         ...(result.success ? {} : { error: String(result.error || "").slice(0, 200) }),
       });
@@ -509,6 +529,7 @@ export class KiroAccountPool {
     let upstreamStatus: number | undefined;
     let upstreamHeaders: Record<string, unknown> = {};
     let api: KiroModelApi | undefined;
+    let effort: string | undefined;
     try {
       account = await this.tokens.ensureAccountToken(accountRecord);
       const credentials = normalizeKiroExtraConfigAliases(
@@ -549,11 +570,14 @@ export class KiroAccountPool {
       }
 
       const mappedRequest = applyModelMapping(originalRequest, credentials);
+      const httpsAgent = buildAgentFromProxy(proxy || undefined);
+      const models = await this.modelCatalog(account, runtimeCredentials, httpsAgent);
       modifiedRequest = this.handler.transformRequestBody(
         mappedRequest,
         runtimeCredentials,
+        (modelId) => models?.get(modelId),
       );
-      const httpsAgent = buildAgentFromProxy(proxy || undefined);
+      effort = fieldEffort(modifiedRequest.additionalModelRequestFields);
       api = await this.selectModelApi(
         account,
         runtimeCredentials,
@@ -635,6 +659,7 @@ export class KiroAccountPool {
             responseHeaders: { ...publicHeaders, ...streamed.internalHeaders },
             accountId: account.id,
             api,
+            effort,
           };
           this.logAttempt(
             account.id,
@@ -653,6 +678,7 @@ export class KiroAccountPool {
               error: "Request canceled",
               accountId: account.id,
               api,
+              effort,
             };
           // Headers are already sent, so the status can't change. End the
           // stream with an SSE error event so the client sees a failure
@@ -690,6 +716,7 @@ export class KiroAccountPool {
             credentialError: upstreamError ? false : undefined,
             accountId: account.id,
             api,
+            effort,
           };
           this.logAttempt(
             account.id,
@@ -729,6 +756,7 @@ export class KiroAccountPool {
         responseHeaders,
         accountId: account.id,
         api,
+        effort,
       };
       this.logAttempt(
         account.id,
@@ -779,10 +807,53 @@ export class KiroAccountPool {
         credentialError: upstreamError && upstreamError.source !== "http" ? false : undefined,
         accountId: account.id,
         api,
+        effort,
       };
       this.logAttempt(account.id, originalRequest.model, poolResult, startedAt);
       return poolResult;
     }
+  }
+
+  // What Kiro's model list says each model takes as request fields. Without
+  // a readable list no fields are sent, and the request is as it was before.
+  private modelCatalog(
+    account: AccountRecord,
+    credentials: ProviderExtraConfig,
+    httpsAgent: ReturnType<typeof buildAgentFromProxy>,
+  ): Promise<ModelCatalog | undefined> {
+    const profileArn = getEffectiveProfileArn(credentials);
+    const identity = createHash("sha256")
+      .update(`${account.accessToken}\0${profileArn ?? ""}`)
+      .digest("hex");
+    return this.modelLists.get(account.id, identity, async () => {
+      const catalog: ModelCatalog = new Map();
+      // Requests share this read, so no single request's cancellation ends it.
+      const signal = AbortSignal.timeout(MODEL_LIST_TIMEOUT_MS);
+      let nextToken: string | undefined;
+      for (let page = 0; page < MODEL_LIST_MAX_PAGES; page++) {
+        const response = await axios.get(
+          `${config.upstreamBaseUrl || getKiroRuntimeBaseUrl(credentials)}/ListAvailableModels`,
+          {
+            params: {
+              origin: "AI_EDITOR",
+              ...(profileArn ? { profileArn } : {}),
+              ...(nextToken ? { nextToken } : {}),
+            },
+            headers: buildHeaders(account.accessToken!, credentials, "usageLimits"),
+            validateStatus: () => true,
+            httpsAgent,
+            ...(httpsAgent ? { proxy: false as const } : {}),
+            signal,
+          },
+        );
+        if (response.status !== 200)
+          throw new Error(`ListAvailableModels returned HTTP ${response.status}`);
+        addModels(catalog, response.data?.models);
+        nextToken = response.data?.nextToken || undefined;
+        if (!nextToken) break;
+      }
+      return catalog;
+    });
   }
 
   // The chat API Kiro assigned the account: CreateResponse for accounts in

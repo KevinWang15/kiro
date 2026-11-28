@@ -120,6 +120,17 @@ export interface MessagesRequest {
 export interface KiroRequest {
   conversationState: ConversationState;
   profileArn?: string;
+  additionalModelRequestFields?: ModelRequestFields;
+}
+
+/**
+ * The thinking mode and reasoning effort Kiro takes as fields, in the shapes
+ * its model list gives (model-fields.ts).
+ */
+export interface ModelRequestFields {
+  thinking?: { type: string };
+  output_config?: { effort: string };
+  reasoning?: { effort: string };
 }
 
 export interface ConversationState {

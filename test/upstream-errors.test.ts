@@ -25,6 +25,11 @@ async function harness(t: test.TestContext, body: Buffer | string | object, stat
         res.end(JSON.stringify({ configuration: {} }));
         return;
       }
+      if (req.url?.startsWith("/ListAvailableModels")) {
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify({ models: [] }));
+        return;
+      }
       calls++;
       res.writeHead(status, {
         "content-type": status === 200 ? "application/vnd.amazon.eventstream" : "application/json",

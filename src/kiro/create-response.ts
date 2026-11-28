@@ -15,6 +15,8 @@
 // implemented by @magpie-community/opencode-kiro-auth 0.1.33+.
 
 import { createHash, randomUUID } from "node:crypto";
+import { AccountCache } from "./account-cache.ts";
+import { fieldEffort } from "./model-fields.ts";
 import type {
   HistoryMessage,
   KiroEvent,
@@ -47,48 +49,26 @@ export const FEATURE_CONFIG_TTL_MS = 15 * 60_000;
 export const FEATURE_CONFIG_RETRY_MS = 60_000;
 export const FEATURE_CONFIG_TIMEOUT_MS = 5_000;
 
-type FeatureConfigEntry = {
-  identity: string;
-  configuration: Record<string, unknown>;
-  until: number;
-  pending?: Promise<void>;
-};
-
 export class ModelApiSelector {
-  private readonly entries = new Map<number, FeatureConfigEntry>();
+  private readonly configurations: AccountCache<Record<string, unknown>>;
 
-  constructor(private readonly now: () => number = Date.now) {}
+  constructor(now: () => number = Date.now) {
+    this.configurations = new AccountCache(
+      "feature configuration",
+      FEATURE_CONFIG_TTL_MS,
+      FEATURE_CONFIG_RETRY_MS,
+      now,
+    );
+  }
 
   async select(
     accountId: number,
     identity: string,
     load: () => Promise<Record<string, unknown>>,
   ): Promise<KiroModelApi> {
-    let entry = this.entries.get(accountId);
-    if (!entry || entry.identity !== identity) {
-      entry = { identity, configuration: {}, until: 0 };
-      this.entries.set(accountId, entry);
-    }
-    if (this.now() >= entry.until) {
-      const current = entry;
-      current.pending ??= load()
-        .then((configuration) => {
-          current.configuration = configuration;
-          current.until = this.now() + FEATURE_CONFIG_TTL_MS;
-        })
-        .catch((error) => {
-          // Keep the last configuration that was read, as the IDE does.
-          current.until = this.now() + FEATURE_CONFIG_RETRY_MS;
-          console.warn(
-            `[kiro] feature configuration for account ${accountId} unavailable: ${(error as Error).message}`,
-          );
-        })
-        .finally(() => {
-          current.pending = undefined;
-        });
-      await current.pending;
-    }
-    return modelApiFromFeatureConfig(entry.configuration);
+    return modelApiFromFeatureConfig(
+      (await this.configurations.get(accountId, identity, load)) ?? {},
+    );
   }
 }
 
@@ -185,6 +165,7 @@ export interface CreateResponseRequest {
   origin: string;
   profileArn?: string;
   metadata: Record<string, string>;
+  reasoning?: { type?: string; effort?: string };
 }
 
 function userInputItems(message: UserInputMessage): ResponsesInputItem[] {
@@ -265,7 +246,8 @@ function historyItems(entry: HistoryMessage): ResponsesInputItem[] {
 }
 
 // The IDE's buildCreateResponseRequest: the conversation as input items, the
-// current message's tools as functions, the conversation in metadata. The
+// current message's tools as functions, the conversation in metadata, and the
+// model fields as one `reasoning` object (its buildReasoningField). The
 // system prompt stays at the head of the first user message, as the IDE sends
 // it without its system_field_injection feature.
 export function toCreateResponseRequest(request: KiroRequest): CreateResponseRequest {
@@ -280,6 +262,8 @@ export function toCreateResponseRequest(request: KiroRequest): CreateResponseReq
     description: tool.toolSpecification.description,
     parameters: tool.toolSpecification.inputSchema.json,
   }));
+  const fields = request.additionalModelRequestFields;
+  const effort = fieldEffort(fields);
   return {
     model: current.modelId,
     input,
@@ -291,6 +275,14 @@ export function toCreateResponseRequest(request: KiroRequest): CreateResponseReq
       "kiro:agent_mode": state.agentTaskType ?? "vibe",
       "kiro:conversation_id": state.conversationId,
     },
+    ...(fields
+      ? {
+          reasoning: {
+            ...(fields.thinking ? { type: fields.thinking.type } : {}),
+            ...(effort ? { effort } : {}),
+          },
+        }
+      : {}),
   };
 }
 

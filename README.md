@@ -42,6 +42,19 @@ minutes) and sends that account's requests to `POST /v1/responses` on
 can't be read, use `generateAssistantResponse`. The API used appears as `api` in
 `[route]` logs and as `api=` in error messages.
 
+A request's adaptive thinking and reasoning effort (`output_config.effort`) go
+to Kiro as request fields: `additionalModelRequestFields` on
+`generateAssistantResponse`, `reasoning` on `/v1/responses`. Kiro's
+`ListAvailableModels` says which thinking types and effort levels each model
+takes, and Kiro answers anything else with 400, so the adapter reads each
+account's model list (cached for 15 minutes) and sends only what it lists.
+Adaptive thinking that names no effort is sent as `high`, the Messages API's
+default. What can't go as a field is written as a `<thinking_mode>` tag at the
+top of the prompt, as before: a level Kiro doesn't list for the model, a
+thinking budget (`thinking.type: "enabled"`), and any request made while the
+model list can't be read. The effort sent as a field appears as `effort` in
+`[route]` result logs.
+
 Signed thinking and redacted reasoning are replayed through Kiro's native
 `reasoningContent` field. When thinking display is `omitted`, the adapter saves
 the original text locally in SQLite and restores it by signature on later
