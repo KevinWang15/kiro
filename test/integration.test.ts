@@ -234,17 +234,45 @@ test("messages and metrics preserve model mapping, headers, JSON, SSE, and aggre
     ),
     3,
   );
-  const models = await jsonRequest(
-    `${baseUrl}/api/metrics/performance/models?${query}`,
+  const schema = await jsonRequest(`${baseUrl}/api/usage/schema`);
+  assert.ok(schema.body.measures.some((measure: any) => measure.id === "cost"));
+  assert.ok(schema.body.fields.some((field: any) => field.name === "model" && field.dimension));
+  const byModel = await jsonRequest(
+    `${baseUrl}/api/usage/series?${query}&measures=requests,cost&groupBy=model`,
   );
-  assert.equal(models.body.models[0].model, "claude-sonnet-4.5");
-  const modelCost = await jsonRequest(
-    `${baseUrl}/api/metrics/performance/model-cost-timeseries?${query}`,
+  assert.deepEqual(
+    byModel.body.series.map((entry: any) => entry.key).sort(),
+    ["claude-*", "claude-sonnet-4.5"],
   );
-  assert.deepEqual(modelCost.body.models, [
-    "claude-*",
-    "claude-sonnet-4.5",
-  ]);
+  assert.equal(byModel.body.totals.requests, 3);
+  assert.ok(byModel.body.totals.cost > 0);
+  const filtered = await jsonRequest(
+    `${baseUrl}/api/usage/series?${query}&measures=requests&f=${encodeURIComponent("model:is:claude-sonnet-4.5")}`,
+  );
+  assert.equal(filtered.body.totals.requests, 2);
+  const filteredMetrics = await jsonRequest(
+    `${baseUrl}/api/metrics/performance?${query}&f=${encodeURIComponent("model:not:claude-sonnet-4.5")}`,
+  );
+  assert.equal(filteredMetrics.body.totalRequests, 1);
+  const modelValues = await jsonRequest(
+    `${baseUrl}/api/usage/values?${query}&field=model`,
+  );
+  assert.deepEqual(modelValues.body.values[0], { value: "claude-sonnet-4.5", count: 2 });
+  for (const bad of [
+    `series?${query}&measures=nope`,
+    `series?${query}`,
+    `series?${query}&measures=cost&groupBy=cost`,
+    `series?${query}&measures=cost&f=nope:is:1`,
+    `values?${query}&field=cost`,
+  ]) {
+    const refused = await jsonRequest(`${baseUrl}/api/usage/${bad}`);
+    assert.equal(refused.response.status, 400, bad);
+    assert.ok(refused.body.error, bad);
+  }
+  const filteredHistory = await jsonRequest(
+    `${baseUrl}/api/history?${query}&f=${encodeURIComponent("model:is:claude-*")}`,
+  );
+  assert.equal(filteredHistory.body.total, 1);
 
   const history = await jsonRequest(
     `${baseUrl}/api/history?${query}&limit=2&offset=0`,
@@ -268,12 +296,13 @@ test("messages and metrics preserve model mapping, headers, JSON, SSE, and aggre
   );
   assert.equal(secondPage.body.entries.length, 1);
   assert.equal(secondPage.body.currentPage, 2);
-  const aggregated = await jsonRequest(
-    `${baseUrl}/api/history/aggregated?${query}`,
+  // What the History chart reads: cost over time among successful requests.
+  const spend = await jsonRequest(
+    `${baseUrl}/api/usage/series?${query}&measures=cost&groupBy=model&f=${encodeURIComponent("outcome:is:success")}`,
   );
-  assert.ok(aggregated.body.totalSpent > 0);
-  assert.equal(aggregated.body.interval, 600000);
-  assert.ok(aggregated.body.buckets.length > 0);
+  assert.ok(spend.body.totals.cost > 0);
+  assert.equal(spend.body.intervalMs, 600000);
+  assert.ok(spend.body.timestamps.length > 0);
 
   const admin = await fetch(`${baseUrl}/`);
   assert.equal(admin.status, 200);

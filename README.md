@@ -86,9 +86,26 @@ Explicit schemes are honored; there is no protocol auto-detection. Proxy tests t
 
 ## Metrics and history
 
-Open **http://127.0.0.1:48763/metrics** for request, cost, latency, token, and per-model charts. Choose a quick or custom time range, or drag across the overview chart to select one.
+Open **http://127.0.0.1:48763/metrics** for request, cost, latency and token charts. Choose a quick or custom time range, or drag across the overview chart to select one.
 
-Open **http://127.0.0.1:48763/history** for usage-over-time charts and expandable request details, including tokens, cost breakdown, timing, Kiro credits, and cumulative consumption.
+The **Usage** section draws one chart per measure, all split by the same field:
+
+- **Measures**: cost (total, per token kind, per request), Kiro credits, requests (all, successful, failed, success rate), tokens (total, per kind, cache hit rate), and speed (average latency, time to first token, output tokens per second). Measures that add up are stacked bars; rates and averages are one line per group, computed as summed numerator over summed denominator.
+- **Split by** model, account, outcome or status code. The eight largest groups each get a color and the rest are folded into "Other". Click a legend entry to hide it from the charts.
+- A model has the same color wherever it appears: its family's badge color (violet for Opus, amber for Sonnet, red for Fable, green for Haiku, neutral for other models), with a shade per version. The browser remembers which shade a version took.
+- Each chart shows its total and the change against the period of the same length just before.
+- The table under the charts lists every group with each chosen measure. Click a column to sort, or a row to filter by it.
+
+Open **http://127.0.0.1:48763/history** for estimated cost over time, which "Split by" can stack by model or account, and expandable request details, including tokens, cost breakdown, timing, Kiro credits, and cumulative consumption.
+
+Both pages have a filter bar. Type or pick a field, then a condition, then its values:
+
+- Model, account, outcome and status code match by value: `=`, `≠`, `is one of`, `is none of`, and for accounts and status codes `exists` / `does not exist`. Values are listed with their request counts in the selected time range, narrowed by the other filters.
+- Cost, token counts, latency, time to first token and Kiro credits compare with a number: `=`, `≠`, `>`, `≥`, `<`, `≤`.
+- Click a filter to edit it, `×` to remove it. Backspace in the empty field steps back into the last one.
+- History lists successful requests only, so it offers no outcome or status code filter.
+
+The time range, filters, measures and split are kept in the page address, so a view can be reloaded, bookmarked, and stepped through with Back.
 
 ## Local data and development
 

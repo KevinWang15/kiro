@@ -1,6 +1,25 @@
+import { OPERATORS, createFilterBar, decodeToken, encodeToken } from "/filter-bar.js";
+
+// What the Metrics page charts until the address says otherwise.
+const DEFAULT_MEASURES = ["cost", "requests", "failed", "totalTokens", "latency", "ttft"];
+// What each page's charts are split by until then; null for totals only.
+const DEFAULT_GROUP_BY = { metrics: "model", history: null };
+
 const state = {
   accounts: [],
   proxies: [],
+  // What can be measured, split and filtered (/api/usage/schema).
+  schema: { measures: [], fields: [] },
+  metricsFilters: [],
+  historyFilters: [],
+  metricsMeasures: [...DEFAULT_MEASURES],
+  metricsGroupBy: DEFAULT_GROUP_BY.metrics,
+  historyGroupBy: DEFAULT_GROUP_BY.history,
+  // The last /api/usage/series answer, redrawn when a series is hidden or
+  // the table is sorted.
+  usage: null,
+  hiddenSeries: new Set(),
+  usageSort: null,
   metricsRange: {
     from: new Date(Date.now() - 24 * 60 * 60 * 1000),
     to: new Date(),
@@ -216,12 +235,16 @@ function trackLoading(pageName, promise) {
   });
 }
 
+// Pages show once the usage schema has arrived and their controls exist; the
+// start-up code at the end of this file then shows the current one.
+let pagesReady = false;
 function showPage(name) {
+  if (!pagesReady) return;
   $$(".page").forEach((p) => p.classList.toggle("hidden", p.id !== `${name}-page`));
   $$("[data-nav]").forEach((a) =>
     a.classList.toggle("active", a.dataset.nav === name),
   );
-  if (name === "metrics" || name === "history") syncRangeFromUrl(name);
+  if (name === "metrics" || name === "history") syncPageFromUrl(name);
   if (name === "accounts") trackLoading("accounts", loadAccounts());
   if (name === "metrics") trackLoading("metrics", loadMetrics());
   if (name === "history") trackLoading("history", loadHistory());
@@ -231,12 +254,12 @@ function showPage(name) {
 
 // Client-side navigation: switching views no longer reloads the document,
 // so the titlebar, rail and already-fetched data stay on screen.
-// Rail links point at bare paths; reuse the range last shown on that page.
-const lastRangeSearch = {};
+// Rail links point at bare paths; reuse the view last shown on that page.
+const lastSearch = {};
 function navigate(path) {
   const url = new URL(path, location.origin);
   const page = pageForPath(url.pathname);
-  if (!url.search && lastRangeSearch[page]) url.search = lastRangeSearch[page];
+  if (!url.search && lastSearch[page]) url.search = lastSearch[page];
   const target = url.pathname + url.search;
   if (location.pathname + location.search !== target)
     history.pushState({}, "", target);
@@ -259,6 +282,7 @@ async function loadAccounts() {
     state.accounts = data.accounts;
     renderAccounts();
     refreshIcons();
+    refreshAccountLabels();
   } catch (error) {
     toast(error.message, true);
   } finally {
@@ -1090,7 +1114,7 @@ function bar(name, data, color, yAxisIndex = 0, stack) {
   };
 }
 
-function emptyGraphic(show) {
+function emptyGraphic(show, text = "No requests in this time range") {
   return show
     ? []
     : [
@@ -1099,7 +1123,7 @@ function emptyGraphic(show) {
           left: "center",
           top: "middle",
           style: {
-            text: "No requests in this time range",
+            text,
             fill: "#84848f",
             fontSize: 13,
             fontFamily: chartFont,
@@ -1378,7 +1402,7 @@ function updateRangeLabel(root, label) {
 function handleMetricsRangeChange(range) {
   state.metricsRange = range;
   updateRangeLabel($("#metrics-time-range"), range.label);
-  pushRange("metrics", range);
+  pushPageState("metrics");
   loadMetrics();
 }
 
@@ -1387,14 +1411,17 @@ function handleHistoryRangeChange(range) {
   state.historyPage = 1;
   state.historyExpanded.clear();
   updateRangeLabel($("#history-time-range"), range.label);
-  pushRange("history", range);
+  pushPageState("history");
   loadHistory();
 }
 
-// ---------- Range <-> URL ----------
-// Quick ranges are stored as ?range=1h (relative to now when loaded); custom
-// and drag-selected ranges as ?from=<ISO>&to=<ISO>. The default (last 24 hours)
-// keeps the bare path, so plain /metrics and /history stay unchanged.
+// ---------- View <-> URL ----------
+// A page's view lives in its address, so it can be reloaded, shared and stepped
+// through with Back. Quick ranges are ?range=1h (relative to now when loaded);
+// custom and drag-selected ranges ?from=<ISO>&to=<ISO>. Each filter is one
+// f=field:condition:values, and by= is what the charts are split by. Metrics
+// adds its measures (m=). Defaults are left out, so plain /metrics and
+// /history stay unchanged.
 const QUICK_RANGES = [
   { key: "15m", ms: 15 * 60 * 1000, label: "Last 15 minutes" },
   { key: "1h", ms: 60 * 60 * 1000, label: "Last hour" },
@@ -1414,17 +1441,19 @@ function quickRange(quick, now = new Date()) {
   };
 }
 
-function rangeToSearch(range) {
+function rangeParams(range) {
   if (range.isRolling) {
     const ms = range.to.getTime() - range.from.getTime();
     const quick = QUICK_RANGES.find((candidate) => candidate.ms === ms);
-    if (quick) return quick.key === DEFAULT_RANGE_KEY ? "" : `?range=${quick.key}`;
+    if (quick) return quick.key === DEFAULT_RANGE_KEY ? [] : [["range", quick.key]];
   }
-  return `?from=${range.from.toISOString()}&to=${range.to.toISOString()}`;
+  return [
+    ["from", range.from.toISOString()],
+    ["to", range.to.toISOString()],
+  ];
 }
 
-function rangeFromSearch(search) {
-  const params = new URLSearchParams(search);
+function rangeFromParams(params) {
   const key = params.get("range");
   if (key) {
     const quick = QUICK_RANGES.find((candidate) => candidate.key === key);
@@ -1442,29 +1471,85 @@ function rangeFromSearch(search) {
   };
 }
 
-function pushRange(page, range) {
-  const search = rangeToSearch(range);
-  lastRangeSearch[page] = search;
+// The page's view as a query string. Colons and commas are legal there and
+// keep dates and filters readable.
+function pageSearch(page) {
+  const pairs = rangeParams(state[`${page}Range`]);
+  for (const token of state[`${page}Filters`]) pairs.push(["f", encodeToken(token)]);
+  if (page === "metrics" && state.metricsMeasures.join() !== DEFAULT_MEASURES.join())
+    pairs.push(["m", state.metricsMeasures.join(",")]);
+  if (state[`${page}GroupBy`] !== DEFAULT_GROUP_BY[page])
+    pairs.push(["by", state[`${page}GroupBy`] || "none"]);
+  const encode = (value) =>
+    encodeURIComponent(value).replace(/%3A/gi, ":").replace(/%2C/gi, ",");
+  return pairs.length
+    ? `?${pairs.map(([name, value]) => `${name}=${encode(value)}`).join("&")}`
+    : "";
+}
+
+function pushPageState(page) {
+  const search = pageSearch(page);
+  lastSearch[page] = search;
   if (location.search !== search)
     history.pushState({}, "", location.pathname + search);
 }
 
-// Apply the URL's range to the page state (initial load, back/forward, rail).
-function syncRangeFromUrl(page) {
-  const stateKey = `${page}Range`;
-  const parsed = location.search ? rangeFromSearch(location.search) : null;
-  if (location.search && !parsed)
-    history.replaceState({}, "", location.pathname);
-  const range =
-    parsed ||
+// A filter from the address, if the page has that field and condition and it
+// carries as many values as the condition takes.
+function pageToken(page, text) {
+  const token = decodeToken(text);
+  const operator = pageFields[page]
+    .find((field) => field.name === token?.field)
+    ?.operators.find((candidate) => candidate.id === token.operator);
+  if (!operator) return null;
+  const count = token.values.length;
+  const fits = operator.takes === "none" ? count === 0 : operator.takes === "one" ? count === 1 : count > 0;
+  return fits ? token : null;
+}
+
+// Apply the address to the page state (initial load, back/forward, rail).
+function syncPageFromUrl(page) {
+  const params = new URLSearchParams(location.search);
+  const before = pageSearch(page);
+  state[`${page}Range`] =
+    rangeFromParams(params) ||
     quickRange(QUICK_RANGES.find((quick) => quick.key === DEFAULT_RANGE_KEY));
-  const changed = rangeToSearch(range) !== rangeToSearch(state[stateKey]);
-  state[stateKey] = range;
-  lastRangeSearch[page] = location.search;
-  updateRangeLabel($(`#${page}-time-range`), range.label);
-  if (page === "history" && changed) {
-    state.historyPage = 1;
-    state.historyExpanded.clear();
+  state[`${page}Filters`] = params
+    .getAll("f")
+    .map((text) => pageToken(page, text))
+    .filter(Boolean);
+  if (page === "metrics") {
+    const asked = (params.get("m") || "").split(",");
+    const measures = state.schema.measures
+      .map((measure) => measure.id)
+      .filter((id) => asked.includes(id));
+    state.metricsMeasures = measures.length ? measures : [...DEFAULT_MEASURES];
+  }
+  const by = params.get("by");
+  state[`${page}GroupBy`] =
+    by === "none"
+      ? null
+      : dimensionFields(page).some((field) => field.name === by)
+        ? by
+        : DEFAULT_GROUP_BY[page];
+  // Drop whatever the address carried that the page can't show.
+  const search = pageSearch(page);
+  if (location.search !== search)
+    history.replaceState({}, "", location.pathname + search);
+  lastSearch[page] = search;
+  updateRangeLabel($(`#${page}-time-range`), state[`${page}Range`].label);
+  filterBars[page]?.reset();
+  if (page === "history") {
+    splitDropdowns.history.set(state.historyGroupBy || "");
+    if (search !== before) {
+      state.historyPage = 1;
+      state.historyExpanded.clear();
+    }
+  }
+  if (page === "metrics") {
+    if (search !== before) state.hiddenSeries.clear();
+    updateUsageControls();
+    syncUsageCards(selectedMeasures());
   }
 }
 
@@ -1478,6 +1563,10 @@ function rangeQuery(range) {
   return `startTime=${encodeURIComponent(range.from.toISOString())}&endTime=${encodeURIComponent(range.to.toISOString())}`;
 }
 
+function filterQuery(tokens) {
+  return tokens.map((token) => `&f=${encodeURIComponent(encodeToken(token))}`).join("");
+}
+
 function historyUsd(value) {
   const amount = Number(value || 0);
   return `$${amount.toFixed(amount !== 0 && Math.abs(amount) < 0.01 ? 6 : 4)}`;
@@ -1487,11 +1576,16 @@ function detailCard(title, rows) {
   return `<section class="detail-card"><h3>${title}</h3><dl>${rows.map(([label, value]) => `<div><dt>${label}</dt><dd>${value}</dd></div>`).join("")}</dl></section>`;
 }
 
+// The model family a name belongs to, which decides its color everywhere a
+// model is shown: badges, charts, legends and tables.
+function modelFamily(model) {
+  const name = String(model || "").toLowerCase();
+  return ["fable", "opus", "sonnet", "haiku"].find((value) => name.includes(value));
+}
+
 function modelBadge(model) {
   const name = String(model || "");
-  const family = ["fable", "opus", "sonnet", "haiku"].find((value) =>
-    name.toLowerCase().includes(value),
-  );
+  const family = modelFamily(name);
   return `<span class="badge model-badge ${family ? `model-${family}` : ""}">${escapeHtml(name)}</span>`;
 }
 
@@ -1562,23 +1656,25 @@ function renderHistoryDetails() {
   refreshIcons();
 }
 
+// Estimated cost over time, stacked by what the page is split by, in the same
+// colors as the Metrics charts.
+const NOTHING_HIDDEN = new Set();
 function renderHistoryChart(data) {
-  $("#history-chart-meta").textContent =
-    `Estimated spend ${historyUsd(data.totalSpent)}`;
-  const spent = data.buckets.map((bucket) => [bucket.timestamp, bucket.spent]);
+  const cost = state.schema.measures.find((measure) => measure.id === "cost");
+  if (!cost) return;
+  const split = data.groupBy === null ? "" : ` · by ${dimensionTitle(data.groupBy).toLowerCase()}`;
+  $("#history-chart-meta").textContent = `Estimated spend ${historyUsd(data.totals.cost)}${split}`;
   setChart("history-usage-chart", {
-    color: chartColors,
-    legend: legend(),
-    tooltip: {
-      trigger: "axis",
-      ...tooltipStyle,
-      valueFormatter: historyUsd,
-    },
+    ...usageChartOption(cost, data, seriesColors(data), {
+      hidden: NOTHING_HIDDEN,
+      filtered: state.historyFilters.length > 0,
+    }),
+    // The margins dragging a time range across this chart counts on.
     grid: { left: 70, right: 30, top: 50, bottom: 40 },
-    xAxis: timeAxis(),
-    yAxis: valueAxis(usdAxis),
-    graphic: emptyGraphic(data.totalSpent > 0),
-    series: [bar("Usage", spent, "#8b5cf6", 0, "usd")],
+    legend:
+      data.groupBy === null
+        ? { show: false }
+        : { ...legend(), type: "scroll", left: 70, pageIconColor: "#b4b4bd", pageTextStyle: { color: "#84848f" } },
   });
 }
 
@@ -1590,10 +1686,14 @@ async function loadHistory() {
   setBusy(button, true);
   try {
     state.historyRange = resolveRollingRange(state.historyRange, new Date());
-    const query = rangeQuery(state.historyRange);
+    const query = rangeQuery(state.historyRange) + filterQuery(state.historyFilters);
     const pageQuery = `${query}&limit=${HISTORY_PAGE_SIZE}&offset=${(state.historyPage - 1) * HISTORY_PAGE_SIZE}`;
+    const groupBy = state.historyGroupBy;
+    // The chart counts what the list shows: successful requests.
     const [chart, history] = await Promise.all([
-      api(`/api/history/aggregated?${query}`),
+      api(
+        `/api/usage/series?${query}${filterQuery(HISTORY_FILTER)}&measures=cost${groupBy ? `&groupBy=${groupBy}` : ""}`,
+      ),
       api(`/api/history?${pageQuery}`),
     ]);
     if (requestId !== historyRequestId) return;
@@ -1618,6 +1718,706 @@ $("#history-body").addEventListener("click", (event) => {
   renderHistoryDetails();
 });
 
+// ---------- Filters ----------
+// Each page's filter bar offers the fields the schema lists. History lists
+// successful requests only, so it has no outcome or status to filter by.
+const FIELD_ICONS = { model: "Sparkles", account: "User", outcome: "CircleCheck", status: "Hash" };
+const HISTORY_FILTER = [{ field: "outcome", operator: "is", values: ["success"] }];
+const pageFields = { metrics: [], history: [] };
+const filterBars = {};
+
+function filterFields(page) {
+  return state.schema.fields
+    .filter((field) => page !== "history" || !["outcome", "status"].includes(field.name))
+    .map((field) => ({
+      name: field.name,
+      title: field.title,
+      icon: FIELD_ICONS[field.name] || "Sigma",
+      detail: field.unit || "",
+      input: field.kind === "number" ? "number" : "list",
+      operators: field.operators.map((id) => OPERATORS[id]).filter(Boolean),
+      // One token per field that is matched by value; a number can be bounded
+      // from both sides.
+      unique: field.dimension,
+      choices: field.choices,
+      // What may be typed as a value besides the listed ones.
+      typed: field.choices ? null : field.kind === "integer" ? /^\d+$/ : /\S/,
+    }));
+}
+
+// The fields a page's charts can be split by: those it can also filter by.
+const dimensionFields = (page) =>
+  state.schema.fields.filter(
+    (field) => field.dimension && pageFields[page].some((offered) => offered.name === field.name),
+  );
+
+// A value as the dashboard shows it. Filters and requests keep the raw value.
+function valueLabel(field, value) {
+  if (field === "account") {
+    const account = state.accounts.find((candidate) => String(candidate.id) === String(value));
+    return account?.comment ? `#${value} · ${account.comment}` : `#${value}`;
+  }
+  if (field === "outcome") return value === "success" ? "Success" : value === "failed" ? "Failed" : value;
+  return String(value);
+}
+
+function setupFilterBar(page, placeholder) {
+  const range = () => rangeQuery(state[`${page}Range`]);
+  filterBars[page] = createFilterBar($(`#${page}-filter`), {
+    fields: () => pageFields[page],
+    tokens: () => state[`${page}Filters`],
+    onChange: (tokens) => setFilters(page, tokens),
+    values: (field, others) =>
+      api(
+        `/api/usage/values?${range()}&field=${field}${filterQuery([...others, ...(page === "history" ? HISTORY_FILTER : [])])}`,
+      ),
+    scope: range,
+    label: valueLabel,
+    placeholder,
+  });
+}
+
+function setFilters(page, tokens) {
+  state[`${page}Filters`] = tokens;
+  if (page === "history") {
+    state.historyPage = 1;
+    state.historyExpanded.clear();
+  }
+  pushPageState(page);
+  filterBars[page].render();
+  trackLoading(page, page === "metrics" ? loadMetrics() : loadHistory());
+}
+
+// Account names appear in filters, legends and the breakdown table; show them
+// again when the accounts they come from arrive or change.
+let accountLabelsShown = "";
+function refreshAccountLabels() {
+  const labels = JSON.stringify(state.accounts.map((account) => [account.id, account.comment]));
+  if (labels === accountLabelsShown) return;
+  accountLabelsShown = labels;
+  Object.values(filterBars).forEach((bar) => bar.render());
+  if (state.usage?.groupBy === "account") renderUsage();
+}
+
+// ---------- Usage by measure ----------
+// One chart per chosen measure, all split by the same field, so a color means
+// the same value in every chart.
+//
+// A model wears its family's color, the one its badge has: violet for Opus,
+// amber for Sonnet, red for Fable, green for Haiku, and neutral for anything
+// else. Versions within a family are shades of that color, the first shade
+// being the badge color itself.
+const MODEL_SHADES = {
+  opus: ["#8b5cf6", "#b4a0ff", "#6e38d1", "#d5cdfe"],
+  sonnet: ["#f5b544", "#c08603", "#8f6200", "#ffd79b"],
+  fable: ["#f87171", "#c34045", "#feb5b1", "#a01c29"],
+  haiku: ["#4ade80", "#00ab56", "#007e3e", "#74ffa1"],
+  other: ["#9ca3af", "#717883", "#cad1de", "#e7effc"],
+};
+// Accounts and status codes have no colors of their own. This palette is
+// checked for color-vision deficiency on the panel background; its order is
+// part of that, so slots are handed out in order.
+const SERIES_COLORS = ["#3987e5", "#d95926", "#199e70", "#c98500", "#d55181", "#0ca30c", "#9085e9", "#e66767"];
+// The groups past the largest ones, which the API folds into one series.
+const OTHER_COLOR = "#4a4a56";
+const OUTCOME_COLORS = { success: "#4ade80", failed: "#f87171" };
+const OTHER_ID = "\u0000other";
+const NONE_ID = "\u0000none";
+const UNIT_NOTES = {
+  usd: "USD",
+  credits: "Credits",
+  count: "Requests",
+  tokens: "Tokens",
+  percent: "Share",
+  ms: "Time",
+  tokensPerSecond: "Tokens per second",
+};
+const compactNumber = new Intl.NumberFormat(undefined, { notation: "compact", maximumFractionDigits: 1 });
+
+const seriesId = (entry) => (entry.other ? OTHER_ID : entry.key === null ? NONE_ID : entry.key);
+const selectedMeasures = () =>
+  state.schema.measures.filter((measure) => state.metricsMeasures.includes(measure.id));
+const dimensionTitle = (name) =>
+  state.schema.fields.find((field) => field.name === name)?.title || name;
+
+function groupLabel(dimension, key) {
+  if (key !== null) return valueLabel(dimension, key);
+  return dimension === "account" ? "No account" : dimension === "status" ? "No status" : "No value";
+}
+
+function seriesLabel(data, entry) {
+  if (entry.other) return `Other (${entry.other})`;
+  return groupLabel(data.groupBy, entry.key);
+}
+
+// The colors a value can take: its family's shades for a model, else the
+// shared palette. `name` is where the choice is remembered.
+function paletteOf(dimension, key) {
+  if (dimension !== "model") return { name: dimension, colors: SERIES_COLORS };
+  const family = modelFamily(key) || "other";
+  return { name: `model:${family}`, colors: MODEL_SHADES[family] };
+}
+
+// Color follows the value, not its rank: a value keeps its color across
+// pages, reloads, filters and time ranges. A value new to this browser takes
+// the first color of its palette that nothing on screen uses.
+const COLOR_STORE = "kiro.seriesColors";
+const colorSlots = (() => {
+  try {
+    return JSON.parse(localStorage.getItem(COLOR_STORE)) || {};
+  } catch {
+    return {};
+  }
+})();
+function seriesColors(data) {
+  const colors = new Map();
+  if (data.groupBy === null) return colors.set(NONE_ID, chartColors[0]);
+  const taken = {};
+  const waiting = [];
+  for (const entry of data.series) {
+    const id = seriesId(entry);
+    if (entry.other) colors.set(id, OTHER_COLOR);
+    else if (data.groupBy === "outcome" && OUTCOME_COLORS[entry.key]) colors.set(id, OUTCOME_COLORS[entry.key]);
+    else {
+      const palette = paletteOf(data.groupBy, entry.key);
+      const used = (taken[palette.name] ||= new Set());
+      const slot = colorSlots[palette.name]?.[id];
+      if (Number.isInteger(slot) && slot < palette.colors.length && !used.has(slot)) {
+        used.add(slot);
+        colors.set(id, palette.colors[slot]);
+      } else waiting.push({ id, palette, used });
+    }
+  }
+  for (const { id, palette, used } of waiting) {
+    const free = palette.colors.findIndex((_, index) => !used.has(index));
+    // More values than the palette has colors: the extra ones share, and the
+    // legend and tooltip tell them apart.
+    const slot = free < 0 ? used.size % palette.colors.length : free;
+    used.add(slot);
+    (colorSlots[palette.name] ||= {})[id] = slot;
+    colors.set(id, palette.colors[slot]);
+  }
+  if (waiting.length > 0) {
+    try {
+      localStorage.setItem(COLOR_STORE, JSON.stringify(colorSlots));
+    } catch {}
+  }
+  return colors;
+}
+
+function formatMeasure(measure, value) {
+  if (value === null || value === undefined) return "—";
+  switch (measure.unit) {
+    case "usd":
+      // Sub-cent amounts keep their digits; large ones don't need four decimals.
+      return value !== 0 && Math.abs(value) < 0.01
+        ? historyUsd(value)
+        : `$${number(value, Math.abs(value) >= 1000 ? 2 : 4)}`;
+    case "credits":
+      return number(value, 2);
+    case "percent":
+      return `${(value * 100).toFixed(1)}%`;
+    case "ms":
+      return duration(value);
+    case "tokensPerSecond":
+      return `${number(value, 1)} tok/s`;
+    default:
+      return Math.round(value).toLocaleString();
+  }
+}
+
+// Axis ticks in one style per axis: compact once the axis reaches 10,000.
+function measureAxis(measure, peak) {
+  switch (measure.unit) {
+    case "usd":
+      return usdAxis;
+    case "percent":
+      return (value) => `${Math.round(value * 100)}%`;
+    case "ms":
+      return (value) => duration(value);
+    default:
+      return peak >= 10000
+        ? (value) => compactNumber.format(value)
+        : (value) => Number(value).toLocaleString();
+  }
+}
+
+// How a total moved against the period of the same length just before it.
+function measureChange(measure, total, previous) {
+  if (total === null || previous === null || total === undefined || previous === undefined) return "";
+  const difference = total - previous;
+  let amount;
+  if (measure.unit === "percent") amount = `${Math.abs(difference * 100).toFixed(1)} pp`;
+  else if (previous === 0) return "";
+  else {
+    const percent = Math.abs((difference / previous) * 100);
+    // Past tenfold a percentage stops reading as one.
+    amount =
+      percent >= 1000
+        ? `${Math.round(total / previous).toLocaleString()}×`
+        : `${percent >= 100 ? Math.round(percent) : percent.toFixed(1)}%`;
+  }
+  const direction = difference > 0 ? "up" : difference < 0 ? "down" : "flat";
+  const tone =
+    !measure.better || direction === "flat"
+      ? ""
+      : (direction === "up") === (measure.better === "higher")
+        ? "good"
+        : "bad";
+  const arrow = direction === "up" ? "arrow-up-right" : direction === "down" ? "arrow-down-right" : "minus";
+  const word =
+    direction === "flat"
+      ? "No change"
+      : amount.endsWith("×")
+        ? amount
+        : `${direction === "up" ? "Up" : "Down"} ${amount}`;
+  return `<span class="usage-change ${tone}" title="Previous period: ${escapeHtml(formatMeasure(measure, previous))}"><i data-lucide="${arrow}"></i>${word} vs previous period</span>`;
+}
+
+function usageCard(measure) {
+  return `<div class="panel chart-panel usage-card" data-measure="${measure.id}">
+    <div class="chart-header">
+      <div><h2>${escapeHtml(measure.label)}</h2><p data-usage-note></p></div>
+      <div class="usage-lead"><strong data-usage-total>—</strong><span data-usage-change></span></div>
+      <button class="icon-button" data-remove-measure="${measure.id}" title="Remove this chart" aria-label="Remove the ${escapeHtml(measure.label)} chart"><i data-lucide="x"></i></button>
+    </div>
+    <div class="chart loading" id="usage-chart-${measure.id}"></div>
+  </div>`;
+}
+
+// The cards of the given measures, rebuilt only when the set changes so a
+// refresh redraws the charts in place.
+function syncUsageCards(measures) {
+  const container = $("#usage-charts");
+  const ids = measures.map((measure) => measure.id).join(",");
+  if (container.dataset.measures === ids) return;
+  for (const [id, chart] of chartInstances) {
+    if (!id.startsWith("usage-chart-")) continue;
+    chart.dispose();
+    chartInstances.delete(id);
+  }
+  container.dataset.measures = ids;
+  container.innerHTML = measures.map(usageCard).join("");
+  container.classList.toggle("single", measures.length === 1);
+  refreshIcons();
+}
+
+// A point between two buckets without requests would draw no line at all, so
+// it gets a dot.
+function ratioLine(name, data, color) {
+  const lone = new Set();
+  data.forEach(([, value], index) => {
+    if (value !== null && (data[index - 1]?.[1] ?? null) === null && (data[index + 1]?.[1] ?? null) === null)
+      lone.add(index);
+  });
+  return {
+    name,
+    type: "line",
+    data,
+    showSymbol: lone.size > 0,
+    showAllSymbol: true,
+    symbol: "circle",
+    symbolSize: (_value, params) => (lone.has(params.dataIndex) ? 6 : 0),
+    lineStyle: { width: 2, color },
+    itemStyle: { color },
+    emphasis: { focus: "series" },
+  };
+}
+
+function usageTooltip(measure, stacked) {
+  return (items) => {
+    const rows = items
+      .filter((item) => item.value[1] !== null && item.value[1] !== undefined && (!stacked || item.value[1] !== 0))
+      .sort((a, b) => b.value[1] - a.value[1]);
+    const row = (key, name, value) =>
+      `<div class="chart-tip-row"><span>${key}${escapeHtml(name)}</span><b>${formatMeasure(measure, value)}</b></div>`;
+    const total = rows.reduce((sum, item) => sum + item.value[1], 0);
+    return `<div class="chart-tip"><div class="chart-tip-time">${new Date(items[0].value[0]).toLocaleString()}</div>${
+      rows.length === 0
+        ? '<div class="chart-tip-none">No requests</div>'
+        : rows.map((item) => row(`<i style="background:${item.color}"></i>`, item.seriesName, item.value[1])).join("")
+    }${stacked && rows.length > 1 ? `<div class="chart-tip-total">${row("", "Total", total)}</div>` : ""}</div>`;
+  };
+}
+
+// `hidden` holds the series the page's legend turned off; `filtered` is
+// whether filters could be why nothing shows.
+function usageChartOption(
+  measure,
+  data,
+  colors,
+  { hidden = state.hiddenSeries, filtered = state.metricsFilters.length > 0 } = {},
+) {
+  const stacked = measure.kind === "sum";
+  const shown = data.series.filter((entry) => !hidden.has(seriesId(entry)));
+  const valuesOf = (entry) => entry.points[measure.id];
+  const peak = data.timestamps.reduce((highest, _timestamp, index) => {
+    const values = shown.map((entry) => valuesOf(entry)[index] ?? 0);
+    return Math.max(highest, stacked ? values.reduce((sum, value) => sum + value, 0) : Math.max(0, ...values));
+  }, 0);
+  const hasData = shown.some((entry) => valuesOf(entry).some((value) => value !== null && (!stacked || value !== 0)));
+  const emptyText =
+    data.series.length > 0 && shown.length === 0
+      ? "Every series is hidden"
+      : filtered
+        ? "No requests match the filters"
+        : undefined;
+  return {
+    // Hidden, but it still decides which series are drawn (the page's own
+    // legend above the charts toggles them).
+    legend: {
+      show: false,
+      selected: Object.fromEntries(
+        data.series.map((entry) => [seriesName(measure, data, entry), !hidden.has(seriesId(entry))]),
+      ),
+    },
+    tooltip: {
+      trigger: "axis",
+      confine: true,
+      ...tooltipStyle,
+      axisPointer: { type: stacked ? "shadow" : "line", shadowStyle: { color: "#ffffff0a" }, lineStyle: { color: "#42424c" } },
+      formatter: usageTooltip(measure, stacked),
+    },
+    grid: { left: 14, right: 18, top: 16, bottom: 10, containLabel: true },
+    xAxis: timeAxis(),
+    yAxis: {
+      ...valueAxis(measureAxis(measure, peak)),
+      ...(["count", "tokens"].includes(measure.unit) ? { minInterval: 1 } : {}),
+      ...(measure.unit === "percent" ? { max: 1 } : {}),
+    },
+    graphic: emptyGraphic(hasData, emptyText),
+    series: data.series.map((entry) => {
+      const name = seriesName(measure, data, entry);
+      const color = colors.get(seriesId(entry));
+      const points = data.timestamps.map((timestamp, index) => [timestamp, valuesOf(entry)[index]]);
+      return stacked ? bar(name, points, color, 0, "total") : ratioLine(name, points, color);
+    }),
+  };
+}
+
+// Without a split the one series is the measure itself.
+const seriesName = (measure, data, entry) =>
+  data.groupBy === null ? measure.label : seriesLabel(data, entry);
+
+function renderUsageLegend(data, colors) {
+  const legend = $("#usage-legend");
+  legend.replaceChildren(
+    ...(data.groupBy === null ? [] : data.series).map((entry) => {
+      const id = seriesId(entry);
+      const chip = document.createElement("button");
+      chip.type = "button";
+      chip.className = "legend-chip";
+      chip.setAttribute("aria-pressed", String(!state.hiddenSeries.has(id)));
+      chip.title = state.hiddenSeries.has(id) ? "Show in the charts" : "Hide from the charts";
+      const swatch = document.createElement("i");
+      swatch.style.background = colors.get(id);
+      const label = document.createElement("span");
+      label.textContent = seriesLabel(data, entry);
+      chip.append(swatch, label);
+      chip.onclick = () => {
+        if (state.hiddenSeries.has(id)) state.hiddenSeries.delete(id);
+        else state.hiddenSeries.add(id);
+        renderUsage();
+      };
+      return chip;
+    }),
+  );
+  legend.classList.toggle("hidden", data.groupBy === null || data.series.length === 0);
+}
+
+// The filter that a breakdown row stands for, and whether it is already on.
+function rowToken(field, key) {
+  return key === null ? { field, operator: "missing", values: [] } : { field, operator: "is", values: [key] };
+}
+function isNarrowed(field, key) {
+  const wanted = encodeToken(rowToken(field, key));
+  return state.metricsFilters.some((token) => encodeToken(token) === wanted);
+}
+
+function renderUsageTable(data, measures, colors) {
+  const panel = $("#usage-table-panel");
+  panel.classList.toggle("hidden", data.groupBy === null);
+  if (data.groupBy === null) return;
+  const title = dimensionTitle(data.groupBy);
+  $("#usage-table-title").textContent = `By ${title.toLowerCase()}`;
+  $("#usage-table-note").textContent = data.rowsTruncated
+    ? `The ${data.rows.length} largest · ${state.metricsRange.label}`
+    : state.metricsRange.label;
+
+  const sort = state.usageSort;
+  const arrow = (id) =>
+    sort?.id === id ? `<i data-lucide="${sort.descending ? "arrow-down" : "arrow-up"}"></i>` : "";
+  const heading = (id, label, numeric) =>
+    `<th${numeric ? ' class="num"' : ""} aria-sort="${sort?.id === id ? (sort.descending ? "descending" : "ascending") : "none"}"><button class="sort-button" data-usage-sort="${id}">${escapeHtml(label)}${arrow(id)}</button></th>`;
+  $("#usage-table-head").innerHTML = `<tr>${heading("label", title, false)}${measures
+    .map((measure) => heading(measure.id, measure.label, true))
+    .join("")}</tr>`;
+
+  // Largest first as the API ranks them, until a column is chosen.
+  const rows = data.rows.map((row) => ({ ...row, label: groupLabel(data.groupBy, row.key) }));
+  if (sort) {
+    const direction = sort.descending ? -1 : 1;
+    rows.sort((a, b) => {
+      if (sort.id === "label") return direction * a.label.localeCompare(b.label, undefined, { numeric: true });
+      const [x, y] = [a.values[sort.id], b.values[sort.id]];
+      // Rows without a value go last either way.
+      if (x === null || y === null) return (x === null) - (y === null);
+      return direction * (x - y);
+    });
+  }
+  const body = $("#usage-table-body");
+  body.replaceChildren(
+    ...rows.map((row) => {
+      const narrowed = isNarrowed(data.groupBy, row.key);
+      const line = document.createElement("tr");
+      line.className = narrowed ? "narrowed" : "";
+      const name = document.createElement("td");
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "row-filter";
+      button.title = narrowed ? "Remove this filter" : `Filter to ${row.label}`;
+      button.setAttribute("aria-pressed", String(narrowed));
+      const swatch = document.createElement("i");
+      swatch.style.background = colors.get(row.key === null ? NONE_ID : row.key) || OTHER_COLOR;
+      const label = document.createElement("span");
+      label.textContent = row.label;
+      button.append(swatch, label);
+      name.append(button);
+      line.append(name);
+      for (const measure of measures) {
+        const cell = document.createElement("td");
+        cell.className = "num";
+        cell.textContent = formatMeasure(measure, row.values[measure.id]);
+        line.append(cell);
+      }
+      line.onclick = () => {
+        const rest = state.metricsFilters.filter((token) => token.field !== data.groupBy);
+        setFilters("metrics", narrowed ? rest : [...rest, rowToken(data.groupBy, row.key)]);
+      };
+      return line;
+    }),
+  );
+  if (rows.length === 0)
+    body.innerHTML = `<tr><td colspan="${measures.length + 1}" class="empty">No requests in this range</td></tr>`;
+  $("#usage-table-foot").innerHTML =
+    rows.length > 1
+      ? `<tr><td>Total</td>${measures.map((measure) => `<td class="num">${formatMeasure(measure, data.totals[measure.id])}</td>`).join("")}</tr>`
+      : "";
+}
+
+function renderUsage() {
+  const data = state.usage;
+  if (!data) return;
+  // The measures the answer carries, which a change still loading may not match.
+  const measures = state.schema.measures.filter((measure) => measure.id in data.totals);
+  const colors = seriesColors(data);
+  const split = data.groupBy === null ? "" : ` by ${dimensionTitle(data.groupBy).toLowerCase()}`;
+  $("#usage-title").textContent = `Usage${split}`;
+  $("#usage-subtitle").textContent =
+    data.groupBy === null
+      ? "Each measure over time"
+      : "Click a legend entry to hide it from the charts, or a table row to filter by it";
+  syncUsageCards(measures);
+  renderUsageLegend(data, colors);
+  for (const measure of measures) {
+    const card = $(`.usage-card[data-measure="${measure.id}"]`);
+    card.querySelector("[data-usage-note]").textContent = `${measure.note || UNIT_NOTES[measure.unit]}${split}`;
+    card.querySelector("[data-usage-total]").textContent = formatMeasure(measure, data.totals[measure.id]);
+    card.querySelector("[data-usage-change]").innerHTML = measureChange(
+      measure,
+      data.totals[measure.id],
+      data.previous[measure.id],
+    );
+    setChart(`usage-chart-${measure.id}`, usageChartOption(measure, data, colors));
+  }
+  renderUsageTable(data, measures, colors);
+  refreshIcons();
+  requestAnimationFrame(() => chartInstances.forEach((chart) => chart.resize()));
+}
+
+let usageRequestId = 0;
+async function loadUsage() {
+  const requestId = ++usageRequestId;
+  const groupBy = state.metricsGroupBy;
+  const data = await api(
+    `/api/usage/series?${rangeQuery(state.metricsRange)}${filterQuery(state.metricsFilters)}&measures=${state.metricsMeasures.join(",")}${groupBy ? `&groupBy=${groupBy}` : ""}`,
+  );
+  if (requestId !== usageRequestId) return;
+  state.usage = data;
+  renderUsage();
+}
+
+// The measures and the split changed: only the usage section reads again.
+function reloadUsage() {
+  pushPageState("metrics");
+  updateUsageControls();
+  syncUsageCards(selectedMeasures());
+  trackLoading("metrics", loadUsage().catch((error) => toast(error.message, true)));
+}
+
+function setMeasures(ids) {
+  // Kept in catalog order; a page with no measure would show nothing.
+  const measures = state.schema.measures.map((measure) => measure.id).filter((id) => ids.includes(id));
+  if (measures.length === 0) return updateUsageControls();
+  state.metricsMeasures = measures;
+  if (state.usageSort && state.usageSort.id !== "label" && !measures.includes(state.usageSort.id))
+    state.usageSort = null;
+  reloadUsage();
+}
+
+function updateUsageControls() {
+  const measures = selectedMeasures();
+  $("#measure-picker-label").textContent =
+    measures.length === 1 ? measures[0].label : `${measures.length} measures`;
+  $$("#measure-popover input").forEach((input) => {
+    input.checked = state.metricsMeasures.includes(input.value);
+    // The last measure stays.
+    input.disabled = input.checked && measures.length === 1;
+  });
+  splitDropdowns.metrics.set(state.metricsGroupBy || "");
+}
+
+function createMeasurePicker(root) {
+  const groups = [...new Set(state.schema.measures.map((measure) => measure.group))];
+  root.innerHTML = `
+    <button class="button" id="measure-picker-button" aria-haspopup="dialog" aria-expanded="false"><i data-lucide="chart-column"></i><span id="measure-picker-label"></span><i data-lucide="chevron-down"></i></button>
+    <div class="measure-popover hidden" id="measure-popover" role="dialog" aria-label="Measures to chart">
+      <div class="measure-groups">${groups
+        .map(
+          (group) =>
+            `<fieldset><legend>${escapeHtml(group)}</legend>${state.schema.measures
+              .filter((measure) => measure.group === group)
+              .map(
+                (measure) =>
+                  `<label title="${escapeHtml(measure.note || "")}"><input type="checkbox" value="${measure.id}"><span>${escapeHtml(measure.label)}</span></label>`,
+              )
+              .join("")}</fieldset>`,
+        )
+        .join("")}</div>
+      <div class="measure-popover-footer"><span>One chart per measure</span><button class="link-button" id="measure-reset">Reset to default</button></div>
+    </div>`;
+  const button = $("#measure-picker-button");
+  const popover = $("#measure-popover");
+  const toggle = (open) => {
+    popover.classList.toggle("hidden", !open);
+    button.setAttribute("aria-expanded", String(open));
+  };
+  button.onclick = () => toggle(popover.classList.contains("hidden"));
+  popover.addEventListener("change", () =>
+    setMeasures($$("#measure-popover input:checked").map((input) => input.value)),
+  );
+  $("#measure-reset").onclick = () => setMeasures(DEFAULT_MEASURES);
+  document.addEventListener("click", (event) => {
+    if (!root.contains(event.target)) toggle(false);
+  });
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") toggle(false);
+  });
+}
+
+// A choice among a few options, looking and working like the time range
+// button: a button showing the choice, and a menu of the options under it.
+function createDropdown(root, { name, icon, small = false, options, onChange }) {
+  let value = options[0]?.value;
+  root.innerHTML = `
+    <button class="button${small ? " small" : ""} dropdown-button" type="button" aria-haspopup="listbox" aria-expanded="false"><i data-lucide="${icon}"></i><span></span><i data-lucide="chevron-down"></i></button>
+    <div class="dropdown-menu hidden" role="listbox" aria-label="${escapeHtml(name)}">${options
+      .map(
+        (option) =>
+          `<button type="button" role="option" data-value="${escapeHtml(option.value)}"><span>${escapeHtml(option.label)}</span>${option.detail ? `<small>${escapeHtml(option.detail)}</small>` : ""}<i data-lucide="check"></i></button>`,
+      )
+      .join("")}</div>`;
+  const button = root.querySelector(".dropdown-button");
+  const menu = root.querySelector(".dropdown-menu");
+  const items = [...menu.querySelectorAll("[role=option]")];
+  const show = (next) => {
+    const option = options.find((candidate) => candidate.value === next) || options[0];
+    value = option.value;
+    button.querySelector("span").textContent = option.label;
+    button.setAttribute("aria-label", `${name}: ${option.label}`);
+    items.forEach((item) => item.setAttribute("aria-selected", String(item.dataset.value === value)));
+  };
+  const toggle = (open) => {
+    menu.classList.toggle("hidden", !open);
+    button.setAttribute("aria-expanded", String(open));
+    if (open) items.find((item) => item.dataset.value === value)?.focus();
+  };
+  button.onclick = () => toggle(menu.classList.contains("hidden"));
+  button.onkeydown = (event) => {
+    if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
+    event.preventDefault();
+    toggle(true);
+  };
+  menu.onclick = (event) => {
+    const item = event.target.closest("[role=option]");
+    if (!item) return;
+    toggle(false);
+    button.focus();
+    if (item.dataset.value === value) return;
+    show(item.dataset.value);
+    onChange(value);
+  };
+  menu.onkeydown = (event) => {
+    const at = items.indexOf(document.activeElement);
+    const to = { ArrowDown: at + 1, ArrowUp: at - 1, Home: 0, End: items.length - 1 }[event.key];
+    if (to !== undefined) {
+      event.preventDefault();
+      items[(to + items.length) % items.length].focus();
+    } else if (event.key === "Escape") {
+      event.stopPropagation();
+      toggle(false);
+      button.focus();
+    } else if (event.key === "Tab") toggle(false);
+  };
+  document.addEventListener("click", (event) => {
+    if (!root.contains(event.target)) toggle(false);
+  });
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") toggle(false);
+  });
+  show(value);
+  return { set: show };
+}
+
+// What a page's charts can be split by, as a dropdown. "" is no split.
+const splitDropdowns = {};
+function createSplitDropdown(page, onChange, small) {
+  splitDropdowns[page] = createDropdown($(`#${page}-group-by`), {
+    name: "Split by",
+    icon: "layers",
+    small,
+    options: [
+      ...dimensionFields(page).map((field) => ({ value: field.name, label: field.title })),
+      { value: "", label: "Nothing", detail: "Totals only" },
+    ],
+    onChange: (value) => onChange(value || null),
+  });
+}
+
+function setupUsageControls() {
+  createMeasurePicker($("#metrics-measures"));
+  createSplitDropdown("metrics", (groupBy) => {
+    state.metricsGroupBy = groupBy;
+    state.hiddenSeries.clear();
+    state.usageSort = null;
+    reloadUsage();
+  });
+  $("#usage-charts").addEventListener("click", (event) => {
+    const button = event.target.closest("[data-remove-measure]");
+    if (button) setMeasures(state.metricsMeasures.filter((id) => id !== button.dataset.removeMeasure));
+  });
+  $("#usage-table-head").addEventListener("click", (event) => {
+    const id = event.target.closest("[data-usage-sort]")?.dataset.usageSort;
+    if (!id) return;
+    // A name sorts A to Z first, a number largest first.
+    state.usageSort =
+      state.usageSort?.id === id
+        ? { id, descending: !state.usageSort.descending }
+        : { id, descending: id !== "label" };
+    renderUsage();
+  });
+}
+
 let metricsRequestId = 0;
 async function loadMetrics() {
   const requestId = ++metricsRequestId;
@@ -1625,12 +2425,11 @@ async function loadMetrics() {
   setBusy(refreshButton, true);
   try {
     state.metricsRange = resolveRollingRange(state.metricsRange, new Date());
-    const query = rangeQuery(state.metricsRange);
-    const [metrics, series, models, modelCost] = await Promise.all([
+    const query = rangeQuery(state.metricsRange) + filterQuery(state.metricsFilters);
+    const [metrics, series] = await Promise.all([
       api(`/api/metrics/performance?${query}`),
       api(`/api/metrics/performance/timeseries?${query}`),
-      api(`/api/metrics/performance/models?${query}`),
-      api(`/api/metrics/performance/model-cost-timeseries?${query}`),
+      loadUsage(),
     ]);
     if (requestId !== metricsRequestId) return;
     const data = series.timeseries;
@@ -1672,7 +2471,10 @@ async function loadMetrics() {
           splitLine: { show: false },
         },
       ],
-      graphic: emptyGraphic(hasRequests),
+      graphic: emptyGraphic(
+        hasRequests,
+        state.metricsFilters.length > 0 ? "No requests match the filters" : undefined,
+      ),
       series: [
         line("Estimated cost", points(data, "totalCostUsd"), chartColors[0], 0),
         bar("Requests", points(data, "totalRequests"), "#4a4a56", 1),
@@ -1684,113 +2486,6 @@ async function loadMetrics() {
         ),
       ],
     });
-
-    setChart("cost-chart", {
-      tooltip: {
-        trigger: "axis",
-        ...tooltipStyle,
-        valueFormatter: (value) => `$${Number(value).toFixed(6)}`,
-      },
-      grid: { left: 65, right: 20, top: 25, bottom: 36 },
-      xAxis: timeAxis(),
-      yAxis: valueAxis(usdAxis),
-      graphic: emptyGraphic(hasRequests),
-      series: [
-        line("Estimated cost", points(data, "totalCostUsd"), chartColors[0]),
-      ],
-    });
-
-    setChart("requests-chart", {
-      legend: legend(),
-      tooltip: { trigger: "axis", ...tooltipStyle },
-      grid: { left: 52, right: 20, top: 48, bottom: 36 },
-      xAxis: timeAxis(),
-      yAxis: { ...valueAxis((value) => Number(value).toLocaleString()), minInterval: 1 },
-      graphic: emptyGraphic(hasRequests),
-      series: [
-        bar(
-          "Success",
-          points(data, "successRequests"),
-          "#4ade80",
-          0,
-          "requests",
-        ),
-        bar("Failed", points(data, "failedRequests"), "#f87171", 0, "requests"),
-      ],
-    });
-
-    setChart("latency-chart", {
-      legend: legend(),
-      tooltip: {
-        trigger: "axis",
-        ...tooltipStyle,
-        valueFormatter: (value) => `${Number(value).toFixed(1)} ms`,
-      },
-      grid: { left: 65, right: 20, top: 48, bottom: 36 },
-      xAxis: timeAxis(),
-      yAxis: valueAxis((value) => duration(value)),
-      graphic: emptyGraphic(hasRequests),
-      series: [
-        line("Average latency", points(data, "avgLatencyMs"), chartColors[1]),
-        line("Time to first token", points(data, "avgTtftMs"), chartColors[4]),
-      ],
-    });
-
-    setChart("tokens-chart", {
-      tooltip: {
-        trigger: "axis",
-        ...tooltipStyle,
-        valueFormatter: (value) => Number(value).toLocaleString(),
-      },
-      grid: { left: 68, right: 20, top: 25, bottom: 36 },
-      xAxis: timeAxis(),
-      yAxis: valueAxis((value) => Number(value).toLocaleString()),
-      graphic: emptyGraphic(hasRequests),
-      series: [bar("Tokens", points(data, "totalTokens"), chartColors[5])],
-    });
-
-    setChart("model-cost-chart", {
-      color: chartColors,
-      legend: { ...legend(), type: "scroll" },
-      tooltip: {
-        trigger: "axis",
-        ...tooltipStyle,
-        valueFormatter: (value) => `$${Number(value).toFixed(6)}`,
-      },
-      grid: { left: 65, right: 20, top: 50, bottom: 38 },
-      xAxis: {
-        ...timeAxis(),
-        type: "category",
-        data: modelCost.timestamps.map((timestamp) =>
-          new Date(timestamp).toLocaleString([], {
-            month: "2-digit",
-            day: "2-digit",
-            hour: "2-digit",
-            minute: "2-digit",
-          }),
-        ),
-      },
-      yAxis: valueAxis(usdAxis),
-      graphic: emptyGraphic(modelCost.models.length > 0),
-      series: modelCost.models.map((model, index) =>
-        bar(
-          model,
-          modelCost.series[model],
-          chartColors[index % chartColors.length],
-          0,
-          "cost",
-        ),
-      ),
-    });
-
-    $("#models-body").innerHTML = models.models.length
-      ? models.models
-          .map(
-            (model) =>
-              `<tr><td>${escapeHtml(model.model)}</td><td>${model.totalRequests}</td><td>$${number(model.totalCostUsd, 2)}</td><td>${Number(model.totalTokens).toLocaleString()}</td><td>${duration(model.avgLatencyMs)}</td></tr>`,
-          )
-          .join("")
-      : '<tr><td colspan="5" class="empty">No requests in this range</td></tr>';
     requestAnimationFrame(() =>
       chartInstances.forEach((chart) => chart.resize()),
     );
@@ -1950,6 +2645,27 @@ function currentPage() {
   return pageForPath(location.pathname);
 }
 if (currentPage() !== "proxies") loadProxies();
+try {
+  state.schema = await api("/api/usage/schema");
+} catch (error) {
+  toast(error.message, true);
+}
+pageFields.metrics = filterFields("metrics");
+pageFields.history = filterFields("history");
+setupFilterBar("metrics", "Filter by model, account, outcome, cost…");
+setupFilterBar("history", "Filter requests by model, account, cost…");
+setupUsageControls();
+createSplitDropdown(
+  "history",
+  (groupBy) => {
+    state.historyGroupBy = groupBy;
+    pushPageState("history");
+    trackLoading("history", loadHistory());
+  },
+  true,
+);
+refreshIcons();
+pagesReady = true;
 showPage(currentPage());
 if (currentPage() !== "accounts") loadAccounts();
 

@@ -8,6 +8,17 @@ import { UsageService } from "./accounts/usage-service.ts";
 import { AccountImportService } from "./accounts/import-service.ts";
 import { KiroAccountPool } from "./accounts/pool.ts";
 import { UsageRepository } from "./usage/repository.ts";
+import {
+  FilterError,
+  USAGE_FIELDS,
+  compileFilters,
+  fieldSchema,
+  isDimension,
+  parseFilters,
+  usageField,
+  type SqlFilter,
+} from "./usage/filters.ts";
+import { MEASURES, measureById, measureSchema } from "./usage/measures.ts";
 import { parseCredentialInput } from "./accounts/credential-input.ts";
 import { handleCountTokensRequest } from "./kiro/token.ts";
 import type { MessagesRequest } from "./kiro/types.ts";
@@ -103,6 +114,17 @@ function optionalTimeRange(
 ): [number | undefined, number | undefined] | null {
   if (!req.query.startTime && !req.query.endTime) return [undefined, undefined];
   return metricsRange(req, res);
+}
+
+// The `f` filters of a usage read, or null after answering 400 for a bad one.
+function usageFilter(req: Request, res: Response): SqlFilter | null {
+  try {
+    return compileFilters(parseFilters(req.query.f));
+  } catch (error) {
+    if (!(error instanceof FilterError)) throw error;
+    res.status(400).json({ error: error.message });
+    return null;
+  }
 }
 
 export function createServerContext(database: AppDatabase): ServerContext {
@@ -469,14 +491,10 @@ export function createServerContext(database: AppDatabase): ServerContext {
     }),
   );
 
-  app.get("/api/history/aggregated", (req, res) => {
-    const range = metricsRange(req, res);
-    if (range) res.json(usage.historyAggregated(range[0], range[1]));
-  });
-
   app.get("/api/history", (req, res) => {
     const range = optionalTimeRange(req, res);
-    if (!range) return;
+    const filter = range && usageFilter(req, res);
+    if (!range || !filter) return;
     const [startMs, endMs] = range;
     const limit = Math.min(
       1000,
@@ -486,8 +504,8 @@ export function createServerContext(database: AppDatabase): ServerContext {
       0,
       Number.parseInt(String(req.query.offset || "0"), 10) || 0,
     );
-    const entries = usage.history({ startMs, endMs, limit, offset });
-    const total = usage.historyCount(startMs, endMs);
+    const entries = usage.history({ startMs, endMs, limit, offset, filter });
+    const total = usage.historyCount(startMs, endMs, filter);
     res.json({
       entries,
       total,
@@ -499,19 +517,54 @@ export function createServerContext(database: AppDatabase): ServerContext {
 
   app.get("/api/metrics/performance", (req, res) => {
     const range = metricsRange(req, res);
-    if (range) res.json(usage.aggregate(...range));
+    const filter = range && usageFilter(req, res);
+    if (range && filter) res.json(usage.aggregate(...range, filter));
   });
   app.get("/api/metrics/performance/timeseries", (req, res) => {
     const range = metricsRange(req, res);
-    if (range) res.json({ timeseries: usage.timeseries(...range) });
+    const filter = range && usageFilter(req, res);
+    if (range && filter) res.json({ timeseries: usage.timeseries(...range, filter) });
   });
-  app.get("/api/metrics/performance/models", (req, res) => {
+
+  // ---- Usage by measure, split by a field, under the filter bar's filters ----
+  app.get("/api/usage/schema", (_req, res) =>
+    res.json({ measures: measureSchema(), fields: fieldSchema() }),
+  );
+  app.get("/api/usage/series", (req, res) => {
     const range = metricsRange(req, res);
-    if (range) res.json({ models: usage.models(...range) });
+    const filter = range && usageFilter(req, res);
+    if (!range || !filter) return;
+    const ids = String(req.query.measures || "").split(",").filter(Boolean);
+    const unknown = ids.find((id) => !measureById(id));
+    if (ids.length === 0 || unknown !== undefined)
+      return void res.status(400).json({
+        error: unknown === undefined ? "measures is required" : `Unknown measure "${unknown}"`,
+      });
+    const groupName = String(req.query.groupBy || "");
+    const groupBy = groupName ? usageField(groupName) : null;
+    if (groupBy === undefined || (groupBy && !isDimension(groupBy)))
+      return void res.status(400).json({ error: `Requests can't be grouped by "${groupName}"` });
+    res.json(
+      usage.series({
+        startMs: range[0],
+        endMs: range[1],
+        // In catalog order whatever order they were asked for in.
+        measures: MEASURES.filter((measure) => ids.includes(measure.id)),
+        groupBy,
+        filter,
+      }),
+    );
   });
-  app.get("/api/metrics/performance/model-cost-timeseries", (req, res) => {
+  app.get("/api/usage/values", (req, res) => {
     const range = metricsRange(req, res);
-    if (range) res.json(usage.modelCostTimeseries(...range));
+    const filter = range && usageFilter(req, res);
+    if (!range || !filter) return;
+    const field = USAGE_FIELDS.find(
+      (candidate) => candidate.name === req.query.field && isDimension(candidate),
+    );
+    if (!field)
+      return void res.status(400).json({ error: `"${String(req.query.field)}" has no values to list` });
+    res.json(usage.fieldValues({ startMs: range[0], endMs: range[1], field, filter }));
   });
 
   const publicDir = path.resolve(process.cwd(), "public");

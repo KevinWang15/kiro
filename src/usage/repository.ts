@@ -1,4 +1,14 @@
 import type { AppDatabase } from "../db.ts";
+import { NO_FILTER, type SqlFilter, type UsageField } from "./filters.ts";
+import {
+  SUMS_SQL,
+  addSums,
+  measureById,
+  sumsOf,
+  zeroSums,
+  type Measure,
+  type Sums,
+} from "./measures.ts";
 
 export interface RequestLogEntry {
   accountId: number | null;
@@ -21,6 +31,20 @@ export interface RequestLogEntry {
 
 const TOKEN_SUM =
   "COALESCE(SUM(inputTokens + outputTokens + cacheReadInputTokens + cacheCreationInputTokens), 0)";
+
+// A chart draws this many groups, each in its own color (the dashboard's
+// palette has as many); the rest are folded into one "Other" series.
+const SERIES_LIMIT = 8;
+// The most groups a breakdown table lists, and values a filter offers.
+const ROW_LIMIT = 200;
+const VALUE_LIMIT = 200;
+const NO_SUMS: Readonly<Sums> = zeroSums();
+
+interface SeriesGroup {
+  key: string | null;
+  total: Sums;
+  buckets: Map<number, Sums>;
+}
 
 export class UsageRepository {
   constructor(private readonly database: AppDatabase) {}
@@ -59,7 +83,7 @@ export class UsageRepository {
       );
   }
 
-  aggregate(startMs: number, endMs: number) {
+  aggregate(startMs: number, endMs: number, filter: SqlFilter = NO_FILTER) {
     const row = this.database.connection
       .prepare(
         `
@@ -67,10 +91,10 @@ export class UsageRepository {
         COUNT(*) - COALESCE(SUM(success), 0) AS failedRequests,
         COALESCE(SUM(costUsd), 0) AS totalCostUsd, ${TOKEN_SUM} AS totalTokens,
         COALESCE(AVG(latencyMs), 0) AS avgLatencyMs, COALESCE(AVG(ttftMs), 0) AS avgTtftMs
-      FROM request_logs WHERE createdAtMs >= ? AND createdAtMs <= ?
+      FROM request_logs WHERE createdAtMs >= ? AND createdAtMs <= ? AND ${filter.where}
     `,
       )
-      .get(startMs, endMs);
+      .get(startMs, endMs, ...filter.params);
     return row;
   }
 
@@ -78,7 +102,7 @@ export class UsageRepository {
     return "CAST((createdAtMs - ?) / ? AS INTEGER)";
   }
 
-  timeseries(startMs: number, endMs: number) {
+  timeseries(startMs: number, endMs: number, filter: SqlFilter = NO_FILTER) {
     const intervalMs = metricsInterval(startMs, endMs);
     const rows = this.database.connection
       .prepare(
@@ -88,15 +112,15 @@ export class UsageRepository {
         COUNT(*) - COALESCE(SUM(success), 0) AS failedRequests,
         COALESCE(SUM(costUsd), 0) AS totalCostUsd, ${TOKEN_SUM} AS totalTokens,
         COALESCE(AVG(latencyMs), 0) AS avgLatencyMs, COALESCE(AVG(ttftMs), 0) AS avgTtftMs
-      FROM request_logs WHERE createdAtMs >= ? AND createdAtMs <= ?
+      FROM request_logs WHERE createdAtMs >= ? AND createdAtMs <= ? AND ${filter.where}
       GROUP BY bucket ORDER BY bucket
     `,
       )
-      .all(startMs, intervalMs, startMs, endMs) as Array<
+      .all(startMs, intervalMs, startMs, endMs, ...filter.params) as Array<
       Record<string, number>
     >;
     const byBucket = new Map(rows.map((row) => [Number(row.bucket), row]));
-    const count = Math.max(1, Math.floor((endMs - startMs) / intervalMs) + 1);
+    const count = bucketCount(startMs, endMs, intervalMs);
     return Array.from({ length: count }, (_, bucket) => {
       const { bucket: _bucket, ...values } = byBucket.get(bucket) || { bucket };
       return {
@@ -107,52 +131,151 @@ export class UsageRepository {
     });
   }
 
-  models(startMs: number, endMs: number) {
-    return this.database.connection
-      .prepare(
-        `
-      SELECT model, COUNT(*) AS totalRequests, COALESCE(SUM(costUsd), 0) AS totalCostUsd,
-        ${TOKEN_SUM} AS totalTokens, COALESCE(AVG(latencyMs), 0) AS avgLatencyMs
-      FROM request_logs WHERE createdAtMs >= ? AND createdAtMs <= ?
-      GROUP BY model ORDER BY totalCostUsd DESC LIMIT 100
-    `,
-      )
-      .all(startMs, endMs);
-  }
-
-  modelCostTimeseries(startMs: number, endMs: number) {
+  // The measures over time, split by one field: the largest groups each as a
+  // series (the rest folded into one), every group's totals for the breakdown
+  // table, and the overall totals beside those of the period just before.
+  series(options: {
+    startMs: number;
+    endMs: number;
+    measures: Measure[];
+    groupBy: UsageField | null;
+    filter?: SqlFilter;
+  }) {
+    const { startMs, endMs, measures, groupBy } = options;
+    const filter = options.filter ?? NO_FILTER;
     const intervalMs = metricsInterval(startMs, endMs);
+    const count = bucketCount(startMs, endMs, intervalMs);
     const rows = this.database.connection
       .prepare(
         `
-      SELECT ${this.bucketExpression()} AS bucket, model, COALESCE(SUM(costUsd), 0) AS cost
-      FROM request_logs WHERE createdAtMs >= ? AND createdAtMs <= ?
-      GROUP BY bucket, model ORDER BY bucket, model
+      SELECT ${this.bucketExpression()} AS bucket,
+        ${groupBy ? groupBy.expression : "NULL"} AS groupKey, ${SUMS_SQL}
+      FROM request_logs WHERE createdAtMs >= ? AND createdAtMs <= ? AND ${filter.where}
+      GROUP BY bucket, groupKey
     `,
       )
-      .all(startMs, intervalMs, startMs, endMs) as Array<{
-      bucket: number;
-      model: string;
-      cost: number;
-    }>;
-    const count = Math.max(1, Math.floor((endMs - startMs) / intervalMs) + 1);
-    const timestamps = Array.from({ length: count }, (_, bucket) =>
-      new Date(startMs + bucket * intervalMs).toISOString(),
-    );
-    const models = [...new Set(rows.map((row) => row.model))];
-    const series: Record<string, number[]> = Object.fromEntries(
-      models.map((model) => [model, Array(count).fill(0)]),
-    );
+      .all(startMs, intervalMs, startMs, endMs, ...filter.params) as Array<
+      Record<string, unknown>
+    >;
+
+    const groups = new Map<string | null, SeriesGroup>();
+    const groupOf = (key: string | null) => {
+      let group = groups.get(key);
+      if (!group) {
+        group = { key, total: zeroSums(), buckets: new Map() };
+        groups.set(key, group);
+      }
+      return group;
+    };
+    const overall = zeroSums();
+    // Without a split there is one series, of zeros when nothing matched.
+    if (!groupBy) groupOf(null);
     for (const row of rows) {
-      if (row.bucket >= 0 && row.bucket < count)
-        series[row.model][row.bucket] = row.cost;
+      const bucket = Number(row.bucket);
+      if (bucket < 0 || bucket >= count) continue;
+      const sums = sumsOf(row);
+      const group = groupOf(row.groupKey === null ? null : String(row.groupKey));
+      group.buckets.set(bucket, sums);
+      addSums(group.total, sums);
+      addSums(overall, sums);
     }
-    return { timestamps, models, series };
+
+    // Largest first by the first measure that adds up (a ratio says nothing
+    // about how much of the traffic a group is), then by requests, so groups
+    // that cost nothing still rank by how busy they were.
+    const rankBy = measures.find((measure) => measure.kind === "sum") ?? measureById("requests")!;
+    const ranked = [...groups.values()].sort(
+      (a, b) =>
+        (rankBy.value(b.total) ?? 0) - (rankBy.value(a.total) ?? 0) ||
+        b.total.requests - a.total.requests ||
+        String(a.key).localeCompare(String(b.key)),
+    );
+    const shown = ranked.slice(0, SERIES_LIMIT);
+    const folded = ranked.slice(SERIES_LIMIT);
+    const other = new Map<number, Sums>();
+    for (const group of folded) {
+      for (const [bucket, sums] of group.buckets)
+        other.set(bucket, addSums(other.get(bucket) ?? zeroSums(), sums));
+    }
+
+    const values = (sums: Sums) =>
+      Object.fromEntries(measures.map((measure) => [measure.id, measure.value(sums)]));
+    const points = (buckets: Map<number, Sums>) =>
+      Object.fromEntries(
+        measures.map((measure) => [
+          measure.id,
+          Array.from({ length: count }, (_, bucket) =>
+            measure.value(buckets.get(bucket) ?? NO_SUMS),
+          ),
+        ]),
+      );
+    // `other` is how many groups the last series folds together.
+    const series: Array<{
+      key: string | null;
+      other?: number;
+      points: Record<string, Array<number | null>>;
+    }> = shown.map((group) => ({ key: group.key, points: points(group.buckets) }));
+    if (folded.length > 0)
+      series.push({ key: null, other: folded.length, points: points(other) });
+    const previous = this.database.connection
+      .prepare(
+        `SELECT ${SUMS_SQL} FROM request_logs
+         WHERE createdAtMs >= ? AND createdAtMs < ? AND ${filter.where}`,
+      )
+      .get(startMs - (endMs - startMs), startMs, ...filter.params) as Record<string, unknown>;
+
+    return {
+      intervalMs,
+      timestamps: Array.from({ length: count }, (_, bucket) =>
+        new Date(startMs + bucket * intervalMs).toISOString(),
+      ),
+      groupBy: groupBy?.name ?? null,
+      totals: values(overall),
+      previous: values(sumsOf(previous)),
+      series,
+      rows: groupBy
+        ? ranked
+            .slice(0, ROW_LIMIT)
+            .map((group) => ({ key: group.key, values: values(group.total) }))
+        : [],
+      rowsTruncated: groupBy !== null && ranked.length > ROW_LIMIT,
+    };
   }
 
-  private historyFilter(startMs?: number, endMs?: number) {
+  // The values a field takes among the matching requests, most common first.
+  fieldValues(options: {
+    startMs: number;
+    endMs: number;
+    field: UsageField;
+    filter?: SqlFilter;
+  }) {
+    const filter = options.filter ?? NO_FILTER;
+    const expression = options.field.expression;
+    const rows = this.database.connection
+      .prepare(
+        `
+      SELECT ${expression} AS value, COUNT(*) AS count
+      FROM request_logs
+      WHERE createdAtMs >= ? AND createdAtMs <= ? AND ${filter.where}
+        AND ${expression} IS NOT NULL
+      GROUP BY value ORDER BY count DESC, value LIMIT ?
+    `,
+      )
+      .all(options.startMs, options.endMs, ...filter.params, VALUE_LIMIT + 1) as Array<{
+      value: string | number;
+      count: number;
+    }>;
+    return {
+      values: rows
+        .slice(0, VALUE_LIMIT)
+        .map((row) => ({ value: String(row.value), count: Number(row.count) })),
+      truncated: rows.length > VALUE_LIMIT,
+    };
+  }
+
+  private historyFilter(startMs?: number, endMs?: number, filter: SqlFilter = NO_FILTER) {
     const conditions = ["success = 1"];
-    const params: number[] = [];
+    const params: Array<string | number> = [];
     if (startMs !== undefined) {
       conditions.push("createdAtMs >= ?");
       params.push(startMs);
@@ -161,6 +284,8 @@ export class UsageRepository {
       conditions.push("createdAtMs <= ?");
       params.push(endMs);
     }
+    conditions.push(filter.where);
+    params.push(...filter.params);
     return { where: conditions.join(" AND "), params };
   }
 
@@ -169,10 +294,12 @@ export class UsageRepository {
     endMs?: number;
     limit: number;
     offset: number;
+    filter?: SqlFilter;
   }) {
     const { where, params } = this.historyFilter(
       options.startMs,
       options.endMs,
+      options.filter,
     );
     const rows = this.database.connection
       .prepare(
@@ -210,41 +337,12 @@ export class UsageRepository {
     }));
   }
 
-  historyCount(startMs?: number, endMs?: number): number {
-    const { where, params } = this.historyFilter(startMs, endMs);
+  historyCount(startMs?: number, endMs?: number, filter?: SqlFilter): number {
+    const { where, params } = this.historyFilter(startMs, endMs, filter);
     const row = this.database.connection
       .prepare(`SELECT COUNT(*) AS count FROM request_logs WHERE ${where}`)
       .get(...params) as { count: number };
     return row.count;
-  }
-
-  historyAggregated(startMs: number, endMs: number) {
-    const interval = metricsInterval(startMs, endMs);
-    const { where, params } = this.historyFilter(startMs, endMs);
-    const rows = this.database.connection
-      .prepare(
-        `
-      SELECT ${this.bucketExpression()} AS bucket, COALESCE(SUM(costUsd), 0) AS spent
-      FROM request_logs WHERE ${where} GROUP BY bucket ORDER BY bucket
-    `,
-      )
-      .all(startMs, interval, ...params) as Array<{
-      bucket: number;
-      spent: number;
-    }>;
-    const values = new Map(rows.map((row) => [row.bucket, row.spent]));
-    const count = Math.max(1, Math.floor((endMs - startMs) / interval) + 1);
-    const buckets = Array.from({ length: count }, (_, bucket) => ({
-      timestamp: new Date(startMs + bucket * interval).toISOString(),
-      spent: values.get(bucket) || 0,
-    }));
-    return {
-      buckets,
-      totalSpent: buckets.reduce((sum, bucket) => sum + bucket.spent, 0),
-      interval,
-      startTime: new Date(startMs).toISOString(),
-      endTime: new Date(endMs).toISOString(),
-    };
   }
 }
 
@@ -254,6 +352,10 @@ function metricsInterval(startMs: number, endMs: number): number {
   if (diff <= 7 * 24 * 60 * 60 * 1000) return 60 * 60 * 1000;
   if (diff <= 30 * 24 * 60 * 60 * 1000) return 6 * 60 * 60 * 1000;
   return 24 * 60 * 60 * 1000;
+}
+
+function bucketCount(startMs: number, endMs: number, intervalMs: number): number {
+  return Math.max(1, Math.floor((endMs - startMs) / intervalMs) + 1);
 }
 
 function zeroTimeSeries() {

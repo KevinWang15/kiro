@@ -194,6 +194,7 @@
             </button>
           </div>
         </div>
+        <div class="filter-row"><div id="metrics-filter"></div></div>
         <div class="summary-grid" id="metrics-summary"><div class="summary-card skeleton"><span class="label">&nbsp;</span><strong></strong><small></small></div><div class="summary-card skeleton"><span class="label">&nbsp;</span><strong></strong><small></small></div><div class="summary-card skeleton"><span class="label">&nbsp;</span><strong></strong><small></small></div><div class="summary-card skeleton"><span class="label">&nbsp;</span><strong></strong><small></small></div></div>
         <div class="panel chart-panel overview-panel">
           <div class="chart-header">
@@ -205,75 +206,32 @@
           </div>
           <div class="chart overview loading" id="overview-chart"></div>
         </div>
-        <div class="chart-grid">
-          <div class="panel chart-panel">
-            <div class="chart-header">
-              <div>
-                <h2>Estimated cost</h2>
-                <p>USD per time bucket</p>
-              </div>
-            </div>
-            <div class="chart loading" id="cost-chart"></div>
+        <div class="section-heading">
+          <div>
+            <h2 id="usage-title">Usage</h2>
+            <p id="usage-subtitle">Each measure over time</p>
           </div>
-          <div class="panel chart-panel">
-            <div class="chart-header">
-              <div>
-                <h2>Request outcomes</h2>
-                <p>Successful and failed requests</p>
-              </div>
-            </div>
-            <div class="chart loading" id="requests-chart"></div>
-          </div>
-          <div class="panel chart-panel">
-            <div class="chart-header">
-              <div>
-                <h2>Latency</h2>
-                <p>Total latency and time to first token</p>
-              </div>
-            </div>
-            <div class="chart loading" id="latency-chart"></div>
-          </div>
-          <div class="panel chart-panel">
-            <div class="chart-header">
-              <div>
-                <h2>Token usage</h2>
-                <p>Input, output and cached tokens</p>
-              </div>
-            </div>
-            <div class="chart loading" id="tokens-chart"></div>
+          <div class="section-controls">
+            <div class="measure-picker" id="metrics-measures"></div>
+            <span class="by">by</span>
+            <div class="dropdown" id="metrics-group-by"></div>
           </div>
         </div>
-        <div class="metrics-model-grid">
-          <div class="panel chart-panel">
-            <div class="chart-header">
-              <div>
-                <h2>Model cost distribution</h2>
-                <p>Estimated USD stacked by model</p>
-              </div>
+        <div class="series-legend" id="usage-legend" role="group" aria-label="Series"></div>
+        <div class="chart-grid" id="usage-charts"></div>
+        <div class="panel hidden" id="usage-table-panel">
+          <div class="panel-heading">
+            <div>
+              <h2 id="usage-table-title">Breakdown</h2>
+              <span id="usage-table-note"></span>
             </div>
-            <div class="chart model-chart loading" id="model-cost-chart"></div>
           </div>
-          <div class="panel model-table-panel">
-            <div class="panel-heading">
-              <div>
-                <h2>Cost by model</h2>
-                <span>Selected time range</span>
-              </div>
-            </div>
-            <div class="table-wrap">
-              <table>
-                <thead>
-                  <tr>
-                    <th>Model</th>
-                    <th>Requests</th>
-                    <th>Estimated USD</th>
-                    <th>Total tokens</th>
-                    <th>Avg latency</th>
-                  </tr>
-                </thead>
-                <tbody id="models-body"><tr class="loading-row"><td colspan="5"><span class="spinner"></span>Loading models…</td></tr></tbody>
-              </table>
-            </div>
+          <div class="table-wrap">
+            <table class="usage-table">
+              <thead id="usage-table-head"></thead>
+              <tbody id="usage-table-body"></tbody>
+              <tfoot id="usage-table-foot"></tfoot>
+            </table>
           </div>
         </div>
       </section>
@@ -295,6 +253,7 @@
             </button>
           </div>
         </div>
+        <div class="filter-row"><div id="history-filter"></div></div>
         <div class="panel chart-panel overview-panel">
           <div class="chart-header">
             <div>
@@ -302,6 +261,10 @@
               <p id="history-chart-meta">
                 Estimated USD consumption per time bucket
               </p>
+            </div>
+            <div class="chart-split">
+              <span>Split by</span>
+              <div class="dropdown" id="history-group-by"></div>
             </div>
             <span>Drag to select a time range</span>
           </div>

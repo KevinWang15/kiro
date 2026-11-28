@@ -94,29 +94,3 @@ test("history returns exact ordering, cumulative costs, components, and pages", 
   assert.equal(usage.historyCount(), 3);
   assert.equal(usage.historyCount(2_000, 3_000), 2);
 });
-
-test("history aggregation returns exact totals and zero-filled buckets", (t) => {
-  const database = new AppDatabase(":memory:");
-  t.after(() => database.close());
-  const now = new Date().toISOString();
-  database.connection
-    .prepare(
-      "INSERT INTO accounts(id, credentials, createdAt, updatedAt) VALUES (7, '{}', ?, ?)",
-    )
-    .run(now, now);
-  for (const values of [
-    { id: 1, time: 1_000, cost: 0.1 },
-    { id: 2, time: 2_000, cost: 0.2 },
-    { id: 3, time: 3_000, cost: 0.3 },
-  ])
-    entry(database, values);
-  const usage = new UsageRepository(database);
-  const result = usage.historyAggregated(0, 3_600_000);
-  assert.equal(result.interval, 600000);
-  assert.equal(result.buckets.length, 7);
-  assert.ok(Math.abs(result.totalSpent - 0.6) < 1e-9);
-  assert.deepEqual(
-    result.buckets.map((bucket) => bucket.spent),
-    [0.6, 0, 0, 0, 0, 0, 0],
-  );
-});
